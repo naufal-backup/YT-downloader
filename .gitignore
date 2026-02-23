@@ -143,3 +143,4 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
 /yt-downloader-backend/node_modules
+yt-downloader-backend/node_modules/.package-lock.json
