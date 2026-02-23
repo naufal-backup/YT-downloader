@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         YT Downloader
+// @name         YouTube Downloader
 // @namespace    http://tampermonkey.net/
-// @version      6.1
-// @description  Menambahkan informasi kualitas pada riwayat unduhan
+// @version      7.0
+// @description  yt-dlp + Cookies Firefox + FAB UI + Auto-Refresh + Delete
 // @match        *://*.youtube.com/watch*
 // @grant        GM_xmlhttpRequest
 // @connect      localhost
@@ -21,7 +21,7 @@
         .ytdl-modal.active { display: grid; grid-template-columns: 1fr 400px; gap: 20px; }
         .main-p { display: flex; flex-direction: column; align-items: center; background: #000; border-radius: 12px; padding: 20px; border: 1px solid #333; }
         .side-p { background: #0f0f0f; padding: 20px; border-radius: 12px; overflow-y: auto; border: 1px solid #333; }
-        .v-card { display: flex; gap: 12px; background: #1e1e1e; margin-bottom: 12px; padding: 10px; border-radius: 8px; border: 1px solid #444; }
+        .v-card { display: flex; gap: 12px; background: #1e1e1e; margin-bottom: 12px; padding: 10px; border-radius: 8px; border: 1px solid #444; position: relative; }
         .v-card img { width: 100px; height: 56px; border-radius: 4px; object-fit: cover; }
         .quality-tag { background: #ff0000; color: white; padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: bold; margin-bottom: 4px; display: inline-block; }
         .p-bar-bg { width: 100%; background: #333; height: 6px; border-radius: 3px; margin: 10px 0; overflow: hidden; }
@@ -63,6 +63,7 @@
     fab.onclick = () => { modal.classList.add('active'); loadHistory(); };
     document.body.appendChild(fab);
 
+    // Monitoring Progress & Auto-Refresh
     const eventSource = new EventSource(`${API_URL}/api/events`);
     eventSource.onmessage = (e) => {
         const data = JSON.parse(e.data);
@@ -99,9 +100,11 @@
                         <img src="${item.thumbnail}">
                         <div style="flex:1;">
                             <span class="quality-tag">${item.quality}</span>
-                            <div style="font-weight:bold; font-size:11px; margin-bottom:5px; line-height:1.2;">${item.title.substring(0,40)}...</div>
+                            <div style="font-weight:bold; font-size:11px; margin-bottom:5px; line-height:1.2; padding-right:20px;">${item.title.substring(0,40)}...</div>
                             <button class="play-b" style="background:#3ea6ff; border:none; color:white; padding:4px 10px; border-radius:4px; cursor:pointer; font-size:10px; font-weight:bold;"
                                     data-file="${item.fileName}" data-title="${item.title}">▶ PLAY</button>
+                            <button class="del-b" style="background:none; border:none; color:#ff4444; cursor:pointer; font-size:14px; position:absolute; top:10px; right:10px;"
+                                    data-file="${item.fileName}">🗑</button>
                         </div>
                     `;
                     list.appendChild(div);
@@ -113,6 +116,20 @@
                         document.getElementById('p-title').innerText = `Memutar: ${this.dataset.title}`;
                         player.src = `${API_URL}/files/${this.dataset.file}`;
                         player.play();
+                    };
+                });
+
+                document.querySelectorAll('.del-b').forEach(b => {
+                    b.onclick = function() {
+                        if (confirm('Hapus file ini secara permanen?')) {
+                            GM_xmlhttpRequest({
+                                method: "DELETE",
+                                url: `${API_URL}/api/history`,
+                                headers: {"Content-Type": "application/json"},
+                                data: JSON.stringify({ fileName: this.dataset.file }),
+                                onload: () => { lastHistoryCount = -1; loadHistory(); }
+                            });
+                        }
                     };
                 });
             }
