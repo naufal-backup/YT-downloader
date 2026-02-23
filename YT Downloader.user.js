@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTube Downloader
 // @namespace    http://tampermonkey.net/
-// @version      9.7
-// @description  yt-dlp + Persistent SSE + Homepage Menu + Grid/List + Speed + Size + Cancel + Scan Folder
+// @version      10.5
+// @description  yt-dlp + Persistent SSE + Homepage Menu + Grid/List + Speed + Size + Cancel + Scan Folder + Library Folders + Shorts Support
 // @match        *://*.youtube.com/*
 // @grant        GM_xmlhttpRequest
 // @connect      localhost
@@ -11,9 +11,19 @@
 (function () {
     'use strict';
     const API = 'http://localhost:8989';
+
+    // Route YouTube CDN thumbnail URLs through local proxy to avoid CORS blocks
+    function thumbSrc(url) {
+        if (!url) return '';
+        // Already a local/proxied URL → use as-is
+        if (url.startsWith('/') || url.startsWith(API)) return url;
+        return `${API}/api/thumb?url=${encodeURIComponent(url)}`;
+    }
     let libraryView = localStorage.getItem('ytdl_view') || 'grid';
     let uiScale = parseFloat(localStorage.getItem('ytdl_scale') || '1');
     let lastHistoryLen = -1;
+    let libraryMaximized = false;
+    let libraryFilter = localStorage.getItem('ytdl_filter') || 'all';
 
     /* ══════════════════════════════════════════════════════
        CSS
@@ -90,29 +100,59 @@
 
     /* RIGHT PANEL */
     .side-p{background:#0d0d0d;border-radius:14px;padding:18px;border:1px solid #222;display:flex;flex-direction:column;overflow:hidden;min-height:0}
+    /* MAXIMIZE: side-p detaches from grid and fills the modal overlay */
+    .side-p.lib-maximized{position:fixed;inset:16px;border-radius:16px;z-index:10000000;padding:20px;box-shadow:0 0 60px rgba(0,0,0,.9)}
     .lib-tabs{display:flex;gap:4px;margin-bottom:10px;flex-shrink:0}
     .lib-tab{flex:1;padding:7px 0;background:#1a1a1a;border:1px solid #222;border-radius:7px;color:#555;font-size:12px;font-weight:700;cursor:pointer;text-align:center;transition:all .2s}
     .lib-tab.active{background:#e00;border-color:#e00;color:#fff}
-    .lib-hdr{display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-shrink:0}
-    .lib-hdr h3{flex:1;margin:0;font-size:13px}
+    .lib-hdr{display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-shrink:0;flex-wrap:wrap}
+    .lib-hdr h3{flex:1;margin:0;font-size:13px;min-width:80px}
     .vbtn{background:#1a1a1a;border:1px solid #333;color:#888;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:15px;transition:all .2s}
     .vbtn.active{background:#e00;border-color:#e00;color:#fff}
+    .maximize-btn{background:#1a1a1a;border:1px solid #333;color:#888;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:13px;transition:all .2s;white-space:nowrap}
+    .maximize-btn:hover{background:#333;color:#fff}
+
+    /* FILTER TABS */
+    .filter-row{display:flex;gap:4px;margin-bottom:10px;flex-shrink:0}
+    .filter-btn{flex:1;padding:5px 0;background:#1a1a1a;border:1px solid #222;border-radius:6px;color:#555;font-size:11px;font-weight:700;cursor:pointer;text-align:center;transition:all .2s}
+    .filter-btn.active{background:#333;border-color:#555;color:#fff}
+
+    /* FOLDER GROUPS */
+    .folder-group{margin-bottom:14px}
+    .folder-group-header{display:flex;align-items:center;gap:6px;padding:6px 10px;background:#1a1a1a;border-radius:7px;margin-bottom:6px;cursor:pointer;user-select:none;border:1px solid #222;transition:background .2s}
+    .folder-group-header:hover{background:#222}
+    .folder-group-header .fg-icon{font-size:14px;flex-shrink:0}
+    .folder-group-header .fg-name{flex:1;font-size:12px;font-weight:700;color:#ccc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .folder-group-header .fg-count{background:#222;color:#555;font-size:9px;padding:2px 6px;border-radius:4px;flex-shrink:0}
+    .folder-group-header .fg-toggle{font-size:10px;color:#444;transition:transform .2s;flex-shrink:0}
+    .folder-group-header.collapsed .fg-toggle{transform:rotate(-90deg)}
+    .folder-group-body{overflow:hidden;transition:all .2s}
+    .folder-group-body.collapsed{display:none}
 
     /* HISTORY CARDS */
     #h-list{flex:1;overflow-y:auto;min-height:0;padding-right:2px}
-    #h-list.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;align-content:start}
-    #h-list.list{display:flex;flex-direction:column;gap:6px}
+    #h-list.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;align-content:start}
+    #h-list.list{display:flex;flex-direction:column;gap:8px}
+
+    /* When maximized, grid uses more columns */
+    .lib-maximized #h-list.grid{grid-template-columns:repeat(auto-fill,minmax(180px,1fr))}
+    .lib-maximized #h-list.grid .folder-group-body:not(.collapsed){grid-template-columns:repeat(auto-fill,minmax(180px,1fr))}
+
+    /* Grid folder group overrides */
+    #h-list.grid .folder-group-body:not(.collapsed){display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;padding:2px}
+    #h-list.list .folder-group-body:not(.collapsed){display:flex;flex-direction:column;gap:8px;padding:2px}
 
     .v-card{display:flex;background:#111;border-radius:10px;border:1px solid #222;overflow:hidden;position:relative;transition:border-color .2s}
     .v-card:hover{border-color:#555}
 
     /* GRID */
-    #h-list.grid .v-card{flex-direction:column;aspect-ratio:16/9;cursor:pointer}
+    #h-list.grid .v-card{flex-direction:column;aspect-ratio:16/9;cursor:pointer;min-width:0}
     #h-list.grid .thumb-wrap{position:absolute;inset:0;background:#0a0a0a;overflow:hidden;z-index:0}
     #h-list.grid .thumb-wrap img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .3s ease}
     #h-list.grid .v-card:hover .thumb-wrap img{transform:scale(1.05)}
     #h-list.grid .thumb-wrap .no-thumb{width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:30px;color:#252525}
     #h-list.grid .thumb-quality{position:absolute;bottom:6px;right:6px;z-index:4;background:rgba(0,0,0,.88);color:#fff;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;pointer-events:none}
+    #h-list.grid .type-badge{position:absolute;top:6px;right:6px;z-index:4;background:rgba(50,50,200,.85);color:#fff;font-size:8px;font-weight:700;padding:2px 5px;border-radius:3px;pointer-events:none}
     #h-list.grid .del-b{position:absolute;top:6px;left:6px;z-index:5;background:rgba(0,0,0,.75);border:none;color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;padding:0;cursor:pointer;opacity:0;transition:opacity .18s;line-height:1}
     #h-list.grid .v-card:hover .del-b{opacity:1}
     #h-list.grid .del-b:hover{background:rgba(180,0,0,.9)!important}
@@ -122,12 +162,16 @@
     #h-list.grid .card-tags{display:flex;gap:4px;flex-wrap:wrap;margin:0 0 7px;align-items:center}
     #h-list.grid .card-acts{display:flex;gap:5px}
 
+    /* Shorts card style - taller aspect ratio */
+    #h-list.grid .v-card.shorts-card{aspect-ratio:9/14}
+
     /* LIST VIEW */
     #h-list.list .v-card{flex-direction:row;align-items:stretch;min-height:90px;height:90px;overflow:hidden}
     #h-list.list .thumb-wrap{position:relative;width:130px;min-width:130px;height:90px;flex-shrink:0;background:#0a0a0a;overflow:hidden}
     #h-list.list .thumb-wrap img{width:100%;height:100%;object-fit:cover;display:block}
     #h-list.list .thumb-wrap .no-thumb{width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:22px;color:#252525}
     #h-list.list .thumb-quality{position:absolute;bottom:4px;right:4px;background:rgba(0,0,0,.88);color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px}
+    #h-list.list .type-badge{position:absolute;top:4px;right:4px;background:rgba(50,50,200,.85);color:#fff;font-size:8px;font-weight:700;padding:1px 5px;border-radius:3px}
     #h-list.list .del-b{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.55);border:none;color:#aaa;font-size:12px;padding:3px 5px;cursor:pointer;transition:all .15s;border-radius:4px;line-height:1;z-index:2}
     #h-list.list .del-b:hover{color:#f44;background:rgba(180,0,0,.75)}
     #h-list.list .cb{padding:10px 32px 10px 12px;flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:6px;position:static;opacity:1;pointer-events:auto;background:none;overflow:hidden}
@@ -143,6 +187,7 @@
     .tag{padding:2px 6px;border-radius:4px;font-size:9px;font-weight:600;white-space:nowrap}
     .tag-s{background:#252525;color:#aaa}
     .tag-f{background:#0d1f30;color:#3ea6ff}
+    .tag-shorts{background:#1a0d30;color:#a78bfa}
     .play-b{background:#3ea6ff;border:none;color:#fff;padding:5px 12px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:700;transition:background .15s}
     .play-b:hover{background:#1a8fd1}
     .del-b{cursor:pointer;border:none;background:none;transition:color .15s}
@@ -191,6 +236,14 @@
     .ytdl-dl-btn{display:inline-flex;align-items:center;gap:6px;background:#cc0000;color:#fff;border:none;margin-right:9px;margin-left:9px;border-radius:50px;padding:0 16px;height:36px;cursor:pointer;font-family:"Roboto","Arial",sans-serif;font-size:14px;font-weight:500;line-height:1;white-space:nowrap;transition:background .15s;flex-shrink:0}
     .ytdl-dl-btn:hover{background:#aa0000}
     .ytdl-dl-btn svg{flex-shrink:0;margin-right:2px}
+
+    /* SHORTS DOWNLOAD BTN */
+    .ytdl-shorts-btn{display:flex;align-items:center;justify-content:center;flex-direction:column;gap:2px;background:rgba(255,255,255,.1);color:#fff;border:none;border-radius:50%;width:48px;height:48px;cursor:pointer;font-size:20px;transition:background .2s;margin:0;padding:0}
+    .ytdl-shorts-btn:hover{background:rgba(255,255,255,.25)}
+    .ytdl-shorts-btn span{font-size:9px;color:rgba(255,255,255,.7);font-weight:500;line-height:1}
+
+    /* HIDE native menu items injected by YT (ytdl-ok items excluded) */
+    ytd-popup-container ytd-menu-popup-renderer ytd-menu-service-item-renderer:not([ytdl-custom]){display:inherit}
     ` }));
 
 
@@ -225,15 +278,21 @@
         <!-- RIGHT -->
         <div class="side-p">
           <div class="lib-tabs">
-            <button class="lib-tab active" id="tab-hist">📁 Riwayat</button>
+            <button class="lib-tab active" id="tab-hist">📁 Library</button>
             <button class="lib-tab" id="tab-scan">🔍 Scan Folder</button>
           </div>
           <!-- HISTORY -->
           <div id="hist-panel">
             <div class="lib-hdr">
-              <h3>Unduhan Sesi Ini</h3>
+              <h3>Library</h3>
               <button class="vbtn ${libraryView==='grid'?'active':''}" id="hbtn-grid">⊞</button>
               <button class="vbtn ${libraryView==='list'?'active':''}" id="hbtn-list">≡</button>
+              <button class="maximize-btn" id="maximize-btn" title="Perluas Library">⤢</button>
+            </div>
+            <div class="filter-row">
+              <button class="filter-btn ${libraryFilter==='all'?'active':''}" data-filter="all">🎬 Semua</button>
+              <button class="filter-btn ${libraryFilter==='video'?'active':''}" data-filter="video">📹 Video</button>
+              <button class="filter-btn ${libraryFilter==='shorts'?'active':''}" data-filter="shorts">📱 Shorts</button>
             </div>
             <div id="h-list" class="${libraryView}"></div>
           </div>
@@ -272,6 +331,31 @@
     const popup  = document.getElementById('ytdl-popup');
     const fab    = document.getElementById('ytdl-fab');
     const player = document.getElementById('v-player');
+
+    /* ══════════════════════════════════════════════════════
+       MAXIMIZE / MINIMIZE LIBRARY
+    ══════════════════════════════════════════════════════ */
+    const maximizeBtn = document.getElementById('maximize-btn');
+    const sidePanel   = document.querySelector('.side-p');
+
+    maximizeBtn.onclick = () => {
+        libraryMaximized = !libraryMaximized;
+        sidePanel.classList.toggle('lib-maximized', libraryMaximized);
+        maximizeBtn.textContent = libraryMaximized ? '⤡' : '⤢';
+        maximizeBtn.title = libraryMaximized ? 'Kembalikan ukuran' : 'Perluas Library';
+    };
+
+    /* ══════════════════════════════════════════════════════
+       FILTER
+    ══════════════════════════════════════════════════════ */
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.onclick = () => {
+            libraryFilter = btn.dataset.filter;
+            localStorage.setItem('ytdl_filter', libraryFilter);
+            document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter === libraryFilter));
+            loadHistory(true);
+        };
+    });
 
     /* ══════════════════════════════════════════════════════
        PLAYER TOGGLE
@@ -352,6 +436,7 @@
         document.getElementById('scan-list').className = v;
         ['hbtn-grid','sbtn-grid'].forEach(id => document.getElementById(id).classList.toggle('active', v==='grid'));
         ['hbtn-list','sbtn-list'].forEach(id => document.getElementById(id).classList.toggle('active', v==='list'));
+        loadHistory(true);
     }
     document.getElementById('hbtn-grid').onclick = () => setView('grid');
     document.getElementById('hbtn-list').onclick = () => setView('list');
@@ -441,7 +526,7 @@
 
             card.innerHTML = `
                 <div class="dl-hdr">
-                    ${thumb ? `<img src="${thumb}" onerror="this.style.display='none'">` : ''}
+                    ${thumb ? `<img src="${thumbSrc(thumb)}" onerror="this.style.display='none'">` : ''}
                     <div class="dl-hdr-text">${title}</div>
                     ${qual ? `<span class="dl-badge">${qual}</span>` : ''}
                 </div>
@@ -514,8 +599,12 @@
     }
 
     /* ══════════════════════════════════════════════════════
-       HISTORY
+       HISTORY / LIBRARY
     ══════════════════════════════════════════════════════ */
+    function isShorts(item) {
+        return !!(item.isShorts || (item.sourceUrl && item.sourceUrl.includes('/shorts/')));
+    }
+
     function loadHistory(force) {
         GM_xmlhttpRequest({
             method: 'GET', url: `${API}/api/history`,
@@ -532,50 +621,105 @@
         const list = document.getElementById('h-list');
         list.className = libraryView;
         if (!hist.length) {
-            list.innerHTML = '<p style="text-align:center;color:#333;margin-top:20px">Belum ada riwayat.</p>';
+            list.innerHTML = '<p style="text-align:center;color:#333;margin-top:20px">Belum ada library.</p>';
             return;
         }
+
+        // Apply filter
+        let filtered = [...hist].reverse();
+        if (libraryFilter === 'shorts') filtered = filtered.filter(item => isShorts(item));
+        else if (libraryFilter === 'video') filtered = filtered.filter(item => !isShorts(item));
+
+        if (!filtered.length) {
+            list.innerHTML = `<p style="text-align:center;color:#333;margin-top:20px">Tidak ada ${libraryFilter === 'shorts' ? 'Shorts' : 'Video'} di library.</p>`;
+            return;
+        }
+
+        // Group by folder
+        const groups = {};
+        filtered.forEach(item => {
+            const folderPath = item.folderPath || '__default__';
+            const folderLabel = folderPath === '__default__' ? '📥 Unduhan Utama' :
+                ('📂 ' + (folderPath.split(/[\\/]/).filter(Boolean).pop() || folderPath));
+            if (!groups[folderPath]) groups[folderPath] = { label: folderLabel, items: [] };
+            groups[folderPath].items.push(item);
+        });
+
         list.innerHTML = '';
-        [...hist].reverse().forEach(item => {
-            const folderName = item.folderPath ? item.folderPath.split(/[\\/]/).pop() : '';
-            const card = document.createElement('div');
-            card.className = 'v-card';
-            card.innerHTML = `
-                <div class="thumb-wrap">
-                    ${item.thumbnail ? `<img src="${item.thumbnail}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">` : ''}
-                    <div class="no-thumb" style="${item.thumbnail ? 'display:none' : ''}">🎬</div>
-                </div>
-                <span class="thumb-quality">${item.quality}</span>
-                <button class="del-b" title="Hapus">🗑</button>
-                <div class="cb">
-                    <div class="card-title" title="${item.title}">${item.title}</div>
-                    <div class="card-tags">
-                        ${item.filesize ? `<span class="tag tag-s">💾 ${item.filesize}</span>` : ''}
-                        ${folderName ? `<span class="tag tag-f" title="${item.folderPath}">📂 ${folderName}</span>` : ''}
-                    </div>
-                    <div class="card-acts">
-                        <button class="play-b">▶ Play</button>
-                    </div>
-                </div>
+        const collapsedFolders = JSON.parse(localStorage.getItem('ytdl_collapsed_folders') || '{}');
+
+        Object.entries(groups).forEach(([folderPath, group]) => {
+            const groupEl = document.createElement('div');
+            groupEl.className = 'folder-group';
+            const isCollapsed = collapsedFolders[folderPath];
+
+            const header = document.createElement('div');
+            header.className = `folder-group-header${isCollapsed ? ' collapsed' : ''}`;
+            header.innerHTML = `
+                <span class="fg-name">${group.label}</span>
+                <span class="fg-count">${group.items.length}</span>
+                <span class="fg-toggle">▼</span>
             `;
-            card.querySelector('.play-b').onclick = () => playFile(item.fileName, item.folderPath || null, item.title);
-            card.querySelector('.del-b').onclick = () => {
-                if (!confirm('Hapus file ini secara permanen?')) return;
-                GM_xmlhttpRequest({
-                    method: 'DELETE', url: `${API}/api/history`,
-                    headers: {'Content-Type':'application/json'},
-                    data: JSON.stringify({ fileName: item.fileName, folderPath: item.folderPath || null }),
-                    onload: () => { lastHistoryLen = -1; loadHistory(true); }
-                });
+            header.onclick = () => {
+                const collapsed = !header.classList.contains('collapsed');
+                header.classList.toggle('collapsed', collapsed);
+                body.classList.toggle('collapsed', collapsed);
+                const saved = JSON.parse(localStorage.getItem('ytdl_collapsed_folders') || '{}');
+                if (collapsed) saved[folderPath] = true;
+                else delete saved[folderPath];
+                localStorage.setItem('ytdl_collapsed_folders', JSON.stringify(saved));
             };
-            list.appendChild(card);
+
+            const body = document.createElement('div');
+            body.className = `folder-group-body${isCollapsed ? ' collapsed' : ''}`;
+
+            group.items.forEach(item => {
+                const folderName = item.folderPath ? item.folderPath.split(/[\\/]/).filter(Boolean).pop() : '';
+                const shorts = isShorts(item);
+                const card = document.createElement('div');
+                card.className = `v-card${shorts ? ' shorts-card' : ''}`;
+                card.innerHTML = `
+                    <div class="thumb-wrap">
+                        ${item.thumbnail ? `<img src="${thumbSrc(item.thumbnail)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">` : ''}
+                        <div class="no-thumb" style="${item.thumbnail ? 'display:none' : ''}">${shorts ? '📱' : '🎬'}</div>
+                    </div>
+                    <span class="thumb-quality">${item.quality}</span>
+                    ${shorts ? `<span class="type-badge">SHORTS</span>` : ''}
+                    <button class="del-b" title="Hapus">🗑</button>
+                    <div class="cb">
+                        <div class="card-title" title="${item.title}">${item.title}</div>
+                        <div class="card-tags">
+                            ${item.filesize ? `<span class="tag tag-s">💾 ${item.filesize}</span>` : ''}
+                            ${shorts ? `<span class="tag tag-shorts">📱 Shorts</span>` : ''}
+                        </div>
+                        <div class="card-acts">
+                            <button class="play-b">▶ Play</button>
+                        </div>
+                    </div>
+                `;
+                card.querySelector('.play-b').onclick = () => playFile(item.fileName, item.folderPath || null, item.title);
+                card.querySelector('.del-b').onclick = () => {
+                    if (!confirm('Hapus file ini secara permanen?')) return;
+                    GM_xmlhttpRequest({
+                        method: 'DELETE', url: `${API}/api/history`,
+                        headers: {'Content-Type':'application/json'},
+                        data: JSON.stringify({ fileName: item.fileName, folderPath: item.folderPath || null }),
+                        onload: () => { lastHistoryLen = -1; loadHistory(true); }
+                    });
+                };
+                body.appendChild(card);
+            });
+
+            groupEl.appendChild(header);
+            groupEl.appendChild(body);
+            list.appendChild(groupEl);
         });
     }
 
     /* ══════════════════════════════════════════════════════
        QUALITY POPUP
     ══════════════════════════════════════════════════════ */
-    function openQualityPopup(videoUrl, titleHint) {
+    function openQualityPopup(videoUrl, titleHint, isShorts) {
         document.getElementById('popup-title').textContent = titleHint || '';
         document.getElementById('q-list').innerHTML = '<span style="color:#555;font-size:13px">Menganalisis...</span>';
         popup.classList.add('show');
@@ -608,7 +752,15 @@
                         GM_xmlhttpRequest({
                             method: 'POST', url: `${API}/api/download`,
                             headers: {'Content-Type':'application/json'},
-                            data: JSON.stringify({ url: videoUrl, format_id: f.format_id, title: data.title, quality: f.quality, thumbnail: data.thumbnail })
+                            data: JSON.stringify({
+                                url: videoUrl,
+                                format_id: f.format_id,
+                                title: data.title,
+                                quality: f.quality,
+                                thumbnail: data.thumbnail,
+                                isShorts: !!isShorts,
+                                sourceUrl: videoUrl
+                            })
                         });
                         popup.classList.remove('show');
                     };
@@ -623,10 +775,9 @@
 
     /* ══════════════════════════════════════════════════════
        WATCH PAGE DOWNLOAD BUTTON
-       FIX DUPLIKAT: tandai container dengan data-ytdl-injected
-       agar tidak inject ulang saat MutationObserver/timeout
-       terpicu berkali-kali. Container baru (setelah SPA nav)
-       tidak punya flag sehingga inject berjalan normal.
+       - Pakai DocumentObserver + flag data-ytdl-injected
+       - Listener yt-page-data-updated (lebih reliable dari yt-navigate-finish)
+         untuk SPA navigation tanpa hard refresh
     ══════════════════════════════════════════════════════ */
     function injectWatchBtn() {
         if (!location.pathname.startsWith('/watch')) return;
@@ -634,51 +785,96 @@
         const target = document.querySelector('#top-level-buttons-computed') ||
                        document.querySelector('ytd-watch-metadata #actions');
         if (!target) return;
-
-        // Sudah di-inject pada container ini → skip
         if (target.dataset.ytdlInjected === '1') return;
         target.dataset.ytdlInjected = '1';
-
-        // Bersihkan sisa tombol lama kalau ada
         target.querySelectorAll('.ytdl-dl-btn').forEach(b => b.remove());
 
         const btn = document.createElement('button');
         btn.className = 'ytdl-dl-btn';
         btn.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z"/></svg>Download`;
         btn.title = 'Download video ini';
-        btn.onclick = () => openQualityPopup(location.href, document.title);
+        btn.onclick = () => openQualityPopup(location.href, document.title, false);
 
         const menuBtn = target.querySelector('ytd-menu-renderer') ||
                         target.querySelector('#button.yt-icon-button') ||
                         target.lastElementChild;
-        if (menuBtn && menuBtn !== btn) {
-            target.insertBefore(btn, menuBtn);
-        } else {
-            target.appendChild(btn);
-        }
+        if (menuBtn && menuBtn !== btn) target.insertBefore(btn, menuBtn);
+        else target.appendChild(btn);
     }
 
-    // SPA navigation
-    window.addEventListener('yt-navigate-finish', () => {
-        setTimeout(injectWatchBtn, 300);
-        setTimeout(injectWatchBtn, 800);
-        setTimeout(injectWatchBtn, 1500);
+    /* ══════════════════════════════════════════════════════
+       SHORTS DOWNLOAD BUTTON
+    ══════════════════════════════════════════════════════ */
+    function injectShortsBtn() {
+        if (!location.pathname.startsWith('/shorts/')) return;
+
+        // Try multiple possible action panels for Shorts
+        const actionPanels = [
+            document.querySelector('ytd-reel-video-renderer[is-active] #actions'),
+            document.querySelector('#actions.ytd-reel-player-overlay-renderer'),
+            document.querySelector('ytd-shorts #actions'),
+            document.querySelector('ytd-reel-player-overlay-renderer #actions'),
+        ].filter(Boolean);
+
+        actionPanels.forEach(panel => {
+            if (panel.dataset.ytdlShortsInjected === '1') return;
+            panel.dataset.ytdlShortsInjected = '1';
+
+            // Find the dislike button to insert after it
+            const dislikeBtn = panel.querySelector('ytd-toggle-button-renderer:nth-of-type(2), [aria-label*="dislike" i], [aria-label*="tidak suka" i]');
+
+            const btn = document.createElement('button');
+            btn.className = 'ytdl-shorts-btn';
+            btn.innerHTML = `<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z"/></svg><span>Unduh</span>`;
+            btn.title = 'Download Shorts ini';
+            btn.onclick = (e) => {
+                e.stopPropagation();
+                const shortsUrl = location.href;
+                openQualityPopup(shortsUrl, document.title, true);
+            };
+
+            if (dislikeBtn && dislikeBtn.parentNode) {
+                dislikeBtn.parentNode.insertBefore(btn, dislikeBtn.nextSibling);
+            } else {
+                panel.appendChild(btn);
+            }
+        });
+    }
+
+    // SPA navigation listeners — covers both watch and shorts
+    ['yt-navigate-finish', 'yt-page-data-updated'].forEach(evt => {
+        window.addEventListener(evt, () => {
+            setTimeout(injectWatchBtn, 300);
+            setTimeout(injectWatchBtn, 900);
+            setTimeout(injectWatchBtn, 1800);
+            setTimeout(injectShortsBtn, 300);
+            setTimeout(injectShortsBtn, 900);
+            setTimeout(injectShortsBtn, 1800);
+        });
     });
 
-    // MutationObserver fallback
+    // MutationObserver fallback — detects DOM ready without relying on events
     const watchBtnObserver = new MutationObserver(() => {
-        if (!location.pathname.startsWith('/watch')) return;
-        const target = document.querySelector('#top-level-buttons-computed') ||
-                       document.querySelector('ytd-watch-metadata #actions');
-        if (target && target.dataset.ytdlInjected !== '1') injectWatchBtn();
+        if (location.pathname.startsWith('/watch')) {
+            const target = document.querySelector('#top-level-buttons-computed') ||
+                           document.querySelector('ytd-watch-metadata #actions');
+            if (target && target.dataset.ytdlInjected !== '1') injectWatchBtn();
+        }
+        if (location.pathname.startsWith('/shorts/')) {
+            injectShortsBtn();
+        }
     });
     watchBtnObserver.observe(document.body, { childList: true, subtree: true });
 
-    // Inject saat pertama load
+    // Initial inject on page load
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => setTimeout(injectWatchBtn, 500));
+        document.addEventListener('DOMContentLoaded', () => {
+            setTimeout(injectWatchBtn, 500);
+            setTimeout(injectShortsBtn, 500);
+        });
     } else {
         setTimeout(injectWatchBtn, 500);
+        setTimeout(injectShortsBtn, 500);
     }
 
     /* ══════════════════════════════════════════════════════
@@ -693,6 +889,7 @@
             if (!list) return;
 
             const item = document.createElement('ytd-menu-service-item-renderer');
+            item.setAttribute('ytdl-custom', '1');
             item.style.cursor = 'pointer';
             item.innerHTML = `<tp-yt-paper-item role="option" style="display:flex;align-items:center;gap:12px;padding:0 16px;min-height:36px;cursor:pointer;font-family:Roboto,sans-serif">
                 <span style="font-size:18px">⬇</span>
@@ -715,7 +912,7 @@
                     }
                 }
                 document.dispatchEvent(new KeyboardEvent('keydown', { key:'Escape', bubbles:true }));
-                if (videoUrl) setTimeout(() => openQualityPopup(videoUrl, titleHint), 150);
+                if (videoUrl) setTimeout(() => openQualityPopup(videoUrl, titleHint, false), 150);
             };
 
             list.parentElement ? list.parentElement.insertBefore(item, list) : menu.insertBefore(item, menu.firstChild);
