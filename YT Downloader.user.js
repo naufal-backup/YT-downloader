@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader
 // @namespace    http://tampermonkey.net/
-// @version      9.0
+// @version      9.5
 // @description  yt-dlp + Persistent SSE + Homepage Menu + Grid/List + Speed + Size + Cancel + Scan Folder
 // @match        *://*.youtube.com/*
 // @grant        GM_xmlhttpRequest
@@ -122,18 +122,21 @@
     #h-list.grid .card-tags{display:flex;gap:4px;flex-wrap:wrap;margin:0 0 7px;align-items:center}
     #h-list.grid .card-acts{display:flex;gap:5px}
 
-    /* LIST — thumb left, info right */
-    #h-list.list .v-card{flex-direction:row;align-items:stretch;min-height:76px}
-    #h-list.list .thumb-wrap{position:relative;width:140px;min-width:140px;flex-shrink:0;background:#0a0a0a;overflow:hidden}
+    /* ═══ LIST VIEW ═══ */
+    #h-list.list .v-card{flex-direction:row;align-items:stretch;min-height:90px;height:90px;overflow:hidden}
+    #h-list.list .thumb-wrap{position:relative;width:130px;min-width:130px;height:90px;flex-shrink:0;background:#0a0a0a;overflow:hidden}
     #h-list.list .thumb-wrap img{width:100%;height:100%;object-fit:cover;display:block}
     #h-list.list .thumb-wrap .no-thumb{width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:22px;color:#252525}
     #h-list.list .thumb-quality{position:absolute;bottom:4px;right:4px;background:rgba(0,0,0,.88);color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px}
-    #h-list.list .del-b{position:absolute;top:8px;right:8px;background:none;border:none;color:#444;font-size:14px;padding:3px;cursor:pointer;transition:color .15s;border-radius:4px;line-height:1;z-index:2}
-    #h-list.list .del-b:hover{color:#f44;background:rgba(255,60,60,.1)}
-    #h-list.list .cb{padding:10px 38px 10px 12px;flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:5px;position:static;opacity:1;pointer-events:auto;background:none}
-    #h-list.list .card-title{font-size:11px;font-weight:700;color:#ddd;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-overflow:ellipsis;margin:0}
-    #h-list.list .card-tags{display:flex;gap:4px;flex-wrap:wrap;margin:0;align-items:center}
-    #h-list.list .card-acts{display:flex;gap:5px;margin:0}
+    /* del-b di pojok kanan atas card (bukan thumb) */
+    #h-list.list .del-b{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.55);border:none;color:#aaa;font-size:12px;padding:3px 5px;cursor:pointer;transition:all .15s;border-radius:4px;line-height:1;z-index:2}
+    #h-list.list .del-b:hover{color:#f44;background:rgba(180,0,0,.75)}
+    /* cb: padding kanan cukup untuk del-b, min-width:0 wajib untuk truncate */
+    #h-list.list .cb{padding:10px 32px 10px 12px;flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:6px;position:static;opacity:1;pointer-events:auto;background:none;overflow:hidden}
+    /* title: 2 baris dengan line-clamp, pastikan container tidak overflow */
+    #h-list.list .card-title{font-size:11px;font-weight:700;color:#ddd;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:0;display:block;width:100%}
+    #h-list.list .card-tags{display:flex;gap:4px;flex-wrap:nowrap;margin:0;align-items:center;overflow:hidden;max-width:100%}
+    #h-list.list .card-acts{display:flex;gap:5px;margin:0;flex-shrink:0}
 
     /* thumb-quality and del-b as direct children of .v-card */
     .v-card > .thumb-quality{position:absolute;z-index:4;pointer-events:none}
@@ -148,7 +151,7 @@
     .play-b:hover{background:#1a8fd1}
     .del-b{cursor:pointer;border:none;background:none;transition:color .15s}
 
-        /* SCAN PANEL */
+    /* SCAN PANEL */
     #scan-panel{display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0}
     #scan-panel.show{display:flex}
     #hist-panel{display:flex;flex-direction:column;flex:1;overflow:hidden;min-height:0}
@@ -188,9 +191,12 @@
     .sc-add.in-lib{background:#031a0c;border-color:#0a5;color:#0d5}
     .sc-empty{color:#333;font-size:13px;text-align:center;margin-top:40px}
 
-    /* INJECT BTN */
-    .ytdl-dl-btn{background:#e00;color:#fff;border-radius:18px;padding:8px 16px;cursor:pointer;font-weight:700;border:none;margin-left:8px;font-size:12px;transition:background .2s}
-    .ytdl-dl-btn:hover{background:#b00}
+    /* INJECT BTN — merah, sejajar dengan tombol native YouTube */
+    .ytdl-dl-btn{display:inline-flex;align-items:center;gap:6px;background:#cc0000;color:#fff;border:none;margin-right:9px;margin-left:9px;border-radius:50px;padding:0 16px;height:36px;cursor:pointer;font-family:"Roboto","Arial",sans-serif;font-size:14px;font-weight:500;line-height:1;white-space:nowrap;transition:background .15s;flex-shrink:0}
+    .ytdl-dl-btn:hover{background:#aa0000}
+    .ytdl-dl-btn svg{flex-shrink:0;margin-right:2px}
+    /* Sembunyikan tombol Download bawaan YouTube (Premium) */
+    ytd-download-button-renderer{display:none!important}
     ` }));
 
     /* ══════════════════════════════════════════════════════
@@ -296,7 +302,6 @@
             wrap.style.marginBottom = '10px';
         }
     }
-    // Set up smooth transition on wrap
     document.getElementById('player-wrap').style.transition = 'max-height .35s ease, opacity .35s ease, margin-bottom .35s ease';
     applyPlayerVisibility();
 
@@ -307,7 +312,6 @@
         applyPlayerVisibility();
     };
 
-    // Update toggle bar status text based on what's playing / downloading
     function updateToggleBar(nowPlayingTitle, activeCount) {
         const titleEl = document.getElementById('ptb-title');
         const badge   = document.getElementById('ptb-badge');
@@ -382,7 +386,7 @@
     document.getElementById('popup-cancel').onclick = () => popup.classList.remove('show');
 
     /* ══════════════════════════════════════════════════════
-       SSE — stored on unsafeWindow so it persists across SPA navigation
+       SSE
     ══════════════════════════════════════════════════════ */
     const _w = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
     if (!_w.__ytdlSSE || _w.__ytdlSSE.readyState === EventSource.CLOSED) {
@@ -396,7 +400,6 @@
         fab.innerHTML = n > 0 ? `⏳<span class="badge">${n}</span>` : '📂';
         fab.style.background = n > 0 ? '#fa0' : '#e00';
         renderDlPanel(data);
-        // Update toggle bar badge
         const playing = player.src && !player.paused ? document.getElementById('p-title')?.textContent : '';
         updateToggleBar(playing || '', n);
     };
@@ -417,7 +420,6 @@
         entries.forEach(([url, info]) => {
             let card = panel.querySelector(`[data-url="${CSS.escape(url)}"]`);
             if (!card) {
-                // Remove empty message
                 const emp = panel.querySelector('.dl-empty');
                 if (emp) emp.remove();
                 card = document.createElement('div');
@@ -482,7 +484,6 @@
             }
         });
 
-        // Remove cards for downloads no longer in data
         panel.querySelectorAll('.dl-card').forEach(c => {
             if (!data[c.getAttribute('data-url')]) c.remove();
         });
@@ -493,10 +494,9 @@
     }
 
     /* ══════════════════════════════════════════════════════
-       STREAM KEY — encode full path as base64url (same as server)
+       STREAM KEY
     ══════════════════════════════════════════════════════ */
     function pathToStreamKey(fullPath) {
-        // TextEncoder → Uint8Array → base64 → base64url
         const bytes = new TextEncoder().encode(fullPath);
         let binary = '';
         bytes.forEach(b => binary += String.fromCharCode(b));
@@ -512,7 +512,6 @@
             player.src = `${API}/files/${encodeURIComponent(fileName)}`;
         }
         player.play();
-        // Auto-show player when something starts playing
         if (!playerVisible) {
             playerVisible = true;
             localStorage.setItem('ytdl_player', 'visible');
@@ -630,18 +629,66 @@
     }
 
     /* ══════════════════════════════════════════════════════
-       WATCH PAGE DOWNLOAD BUTTON
+       FIX: WATCH PAGE DOWNLOAD BUTTON
+       — pakai yt-navigate-finish event + MutationObserver
+         agar tombol muncul tanpa hard refresh
     ══════════════════════════════════════════════════════ */
     function injectWatchBtn() {
+        // Hanya inject di halaman /watch
         if (!location.pathname.startsWith('/watch')) return;
-        if (document.querySelector('.ytdl-dl-btn')) return;
-        const target = document.querySelector('#top-level-buttons-computed') || document.querySelector('ytd-watch-metadata #actions');
+
+        // Jika tombol sudah ada DAN masih terpasang di DOM yang benar, skip
+        const existing = document.querySelector('.ytdl-dl-btn');
+        if (existing && existing.isConnected) return;
+
+        // Target container tombol aksi YouTube
+        const target = document.querySelector('#top-level-buttons-computed') ||
+                        document.querySelector('ytd-watch-metadata #actions');
         if (!target) return;
+
         const btn = document.createElement('button');
         btn.className = 'ytdl-dl-btn';
-        btn.textContent = '⬇ DOWNLOAD';
+        btn.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z"/></svg>Download`;
+        btn.title = 'Download video ini';
         btn.onclick = () => openQualityPopup(location.href, document.title);
-        target.appendChild(btn);
+
+        // Sisipkan SEBELUM tombol titik 3 (ytd-menu-renderer = tombol ⋯)
+        // Struktur YouTube: #top-level-buttons-computed > [like][dislike][share][...][save][ytd-menu-renderer(titik3)]
+        const menuBtn = target.querySelector('ytd-menu-renderer') ||
+                        target.querySelector('#button.yt-icon-button') ||
+                        target.lastElementChild;
+        if (menuBtn && menuBtn !== btn) {
+            target.insertBefore(btn, menuBtn);
+        } else {
+            target.appendChild(btn);
+        }
+    }
+
+    // ── FIX: Listen ke event navigasi SPA YouTube ──
+    // YouTube menembakkan 'yt-navigate-finish' setiap kali SPA navigation selesai
+    window.addEventListener('yt-navigate-finish', () => {
+        // Tunggu sebentar agar YouTube selesai render DOM-nya
+        setTimeout(injectWatchBtn, 300);
+        setTimeout(injectWatchBtn, 800);  // fallback jika 300ms belum cukup
+        setTimeout(injectWatchBtn, 1500); // fallback kedua untuk koneksi lambat
+    });
+
+    // ── FIX: MutationObserver sebagai fallback ──
+    // Watch untuk munculnya #top-level-buttons-computed atau ytd-watch-metadata
+    const watchBtnObserver = new MutationObserver(() => {
+        if (!location.pathname.startsWith('/watch')) return;
+        if (document.querySelector('.ytdl-dl-btn')?.isConnected) return;
+        const target = document.querySelector('#top-level-buttons-computed') ||
+                       document.querySelector('ytd-watch-metadata #actions');
+        if (target) injectWatchBtn();
+    });
+    watchBtnObserver.observe(document.body, { childList: true, subtree: true });
+
+    // ── Inject saat pertama load (kalau langsung buka /watch) ──
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => setTimeout(injectWatchBtn, 500));
+    } else {
+        setTimeout(injectWatchBtn, 500);
     }
 
     /* ══════════════════════════════════════════════════════
@@ -662,7 +709,6 @@
 
             item.onclick = (e) => {
                 e.stopPropagation();
-                // Find associated video URL by walking up from the menu's anchor
                 let videoUrl = null;
                 let titleHint = '';
                 const renderers = ['ytd-rich-item-renderer','ytd-video-renderer','ytd-compact-video-renderer','ytd-grid-video-renderer'];
@@ -713,14 +759,12 @@
     function renderFolderList() {
         const el = document.getElementById('folder-list');
         el.innerHTML = '';
-        // Main folder
         el.insertAdjacentHTML('beforeend', `
             <div class="folder-item">
                 <span>📥</span>
                 <span class="fp" title="${mainFolder}">${mainFolder}</span>
                 <span class="fbadge">Utama</span>
             </div>`);
-        // Extra folders
         scanFolders.forEach((f, i) => {
             const div = document.createElement('div');
             div.className = 'folder-item';
@@ -804,7 +848,6 @@
             `;
 
             card.querySelector('.sc-play').onclick = () => {
-                // Use the streamKey provided by server (already base64url encoded correctly)
                 document.getElementById('p-title').textContent = f.title;
                 player.src = `${API}/api/stream/${f.streamKey}`;
                 player.play();
@@ -837,17 +880,12 @@
     let prevKeys = '';
     setInterval(() => {
         const keys = Object.keys(_w.__ytdlProg || {}).join(',');
-        // Refresh history when a download finishes (key disappears)
         if (keys !== prevKeys && keys.length < prevKeys.length) {
             loadHistory(true);
         }
         prevKeys = keys;
         if (modal.classList.contains('show')) loadHistory();
-        // Keep download panel updated even when modal is closed
         if (_w.__ytdlProg && Object.keys(_w.__ytdlProg).length > 0) renderDlPanel(_w.__ytdlProg);
     }, 2000);
-
-    // Re-inject watch button after SPA navigation
-    setInterval(injectWatchBtn, 2000);
 
 })();
