@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader
 // @namespace    http://tampermonkey.net/
-// @version      9.5
+// @version      9.7
 // @description  yt-dlp + Persistent SSE + Homepage Menu + Grid/List + Speed + Size + Cancel + Scan Folder
 // @match        *://*.youtube.com/*
 // @grant        GM_xmlhttpRequest
@@ -106,7 +106,7 @@
     .v-card{display:flex;background:#111;border-radius:10px;border:1px solid #222;overflow:hidden;position:relative;transition:border-color .2s}
     .v-card:hover{border-color:#555}
 
-    /* GRID — card is 16:9 box, thumbnail absolute, .cb overlay fades in on hover */
+    /* GRID */
     #h-list.grid .v-card{flex-direction:column;aspect-ratio:16/9;cursor:pointer}
     #h-list.grid .thumb-wrap{position:absolute;inset:0;background:#0a0a0a;overflow:hidden;z-index:0}
     #h-list.grid .thumb-wrap img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .3s ease}
@@ -122,23 +122,19 @@
     #h-list.grid .card-tags{display:flex;gap:4px;flex-wrap:wrap;margin:0 0 7px;align-items:center}
     #h-list.grid .card-acts{display:flex;gap:5px}
 
-    /* ═══ LIST VIEW ═══ */
+    /* LIST VIEW */
     #h-list.list .v-card{flex-direction:row;align-items:stretch;min-height:90px;height:90px;overflow:hidden}
     #h-list.list .thumb-wrap{position:relative;width:130px;min-width:130px;height:90px;flex-shrink:0;background:#0a0a0a;overflow:hidden}
     #h-list.list .thumb-wrap img{width:100%;height:100%;object-fit:cover;display:block}
     #h-list.list .thumb-wrap .no-thumb{width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:22px;color:#252525}
     #h-list.list .thumb-quality{position:absolute;bottom:4px;right:4px;background:rgba(0,0,0,.88);color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px}
-    /* del-b di pojok kanan atas card (bukan thumb) */
     #h-list.list .del-b{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.55);border:none;color:#aaa;font-size:12px;padding:3px 5px;cursor:pointer;transition:all .15s;border-radius:4px;line-height:1;z-index:2}
     #h-list.list .del-b:hover{color:#f44;background:rgba(180,0,0,.75)}
-    /* cb: padding kanan cukup untuk del-b, min-width:0 wajib untuk truncate */
     #h-list.list .cb{padding:10px 32px 10px 12px;flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:6px;position:static;opacity:1;pointer-events:auto;background:none;overflow:hidden}
-    /* title: 2 baris dengan line-clamp, pastikan container tidak overflow */
     #h-list.list .card-title{font-size:11px;font-weight:700;color:#ddd;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:0;display:block;width:100%}
     #h-list.list .card-tags{display:flex;gap:4px;flex-wrap:nowrap;margin:0;align-items:center;overflow:hidden;max-width:100%}
     #h-list.list .card-acts{display:flex;gap:5px;margin:0;flex-shrink:0}
 
-    /* thumb-quality and del-b as direct children of .v-card */
     .v-card > .thumb-quality{position:absolute;z-index:4;pointer-events:none}
     .v-card > .del-b{position:absolute;z-index:5}
 
@@ -191,13 +187,12 @@
     .sc-add.in-lib{background:#031a0c;border-color:#0a5;color:#0d5}
     .sc-empty{color:#333;font-size:13px;text-align:center;margin-top:40px}
 
-    /* INJECT BTN — merah, sejajar dengan tombol native YouTube */
+    /* INJECT BTN */
     .ytdl-dl-btn{display:inline-flex;align-items:center;gap:6px;background:#cc0000;color:#fff;border:none;margin-right:9px;margin-left:9px;border-radius:50px;padding:0 16px;height:36px;cursor:pointer;font-family:"Roboto","Arial",sans-serif;font-size:14px;font-weight:500;line-height:1;white-space:nowrap;transition:background .15s;flex-shrink:0}
     .ytdl-dl-btn:hover{background:#aa0000}
     .ytdl-dl-btn svg{flex-shrink:0;margin-right:2px}
-    /* Sembunyikan tombol Download bawaan YouTube (Premium) */
-    ytd-download-button-renderer{display:none!important}
     ` }));
+
 
     /* ══════════════════════════════════════════════════════
        MODAL HTML
@@ -213,14 +208,12 @@
             <span class="scale-val" id="scale-lbl">${Math.round(uiScale*100)}%</span>
           </div>
 
-          <!-- Collapsible player toggle bar -->
           <div id="player-toggle-bar">
             <span class="ptb-icon" id="ptb-icon">▼</span>
             <span class="ptb-title" id="ptb-title">Player</span>
             <span class="ptb-badge" id="ptb-badge">Idle</span>
           </div>
 
-          <!-- Player section (collapsible) -->
           <div id="player-wrap">
             <p id="p-title">Library & Player</p>
             <video id="v-player" controls></video>
@@ -629,22 +622,25 @@
     }
 
     /* ══════════════════════════════════════════════════════
-       FIX: WATCH PAGE DOWNLOAD BUTTON
-       — pakai yt-navigate-finish event + MutationObserver
-         agar tombol muncul tanpa hard refresh
+       WATCH PAGE DOWNLOAD BUTTON
+       FIX DUPLIKAT: tandai container dengan data-ytdl-injected
+       agar tidak inject ulang saat MutationObserver/timeout
+       terpicu berkali-kali. Container baru (setelah SPA nav)
+       tidak punya flag sehingga inject berjalan normal.
     ══════════════════════════════════════════════════════ */
     function injectWatchBtn() {
-        // Hanya inject di halaman /watch
         if (!location.pathname.startsWith('/watch')) return;
 
-        // Jika tombol sudah ada DAN masih terpasang di DOM yang benar, skip
-        const existing = document.querySelector('.ytdl-dl-btn');
-        if (existing && existing.isConnected) return;
-
-        // Target container tombol aksi YouTube
         const target = document.querySelector('#top-level-buttons-computed') ||
-                        document.querySelector('ytd-watch-metadata #actions');
+                       document.querySelector('ytd-watch-metadata #actions');
         if (!target) return;
+
+        // Sudah di-inject pada container ini → skip
+        if (target.dataset.ytdlInjected === '1') return;
+        target.dataset.ytdlInjected = '1';
+
+        // Bersihkan sisa tombol lama kalau ada
+        target.querySelectorAll('.ytdl-dl-btn').forEach(b => b.remove());
 
         const btn = document.createElement('button');
         btn.className = 'ytdl-dl-btn';
@@ -652,8 +648,6 @@
         btn.title = 'Download video ini';
         btn.onclick = () => openQualityPopup(location.href, document.title);
 
-        // Sisipkan SEBELUM tombol titik 3 (ytd-menu-renderer = tombol ⋯)
-        // Struktur YouTube: #top-level-buttons-computed > [like][dislike][share][...][save][ytd-menu-renderer(titik3)]
         const menuBtn = target.querySelector('ytd-menu-renderer') ||
                         target.querySelector('#button.yt-icon-button') ||
                         target.lastElementChild;
@@ -664,27 +658,23 @@
         }
     }
 
-    // ── FIX: Listen ke event navigasi SPA YouTube ──
-    // YouTube menembakkan 'yt-navigate-finish' setiap kali SPA navigation selesai
+    // SPA navigation
     window.addEventListener('yt-navigate-finish', () => {
-        // Tunggu sebentar agar YouTube selesai render DOM-nya
         setTimeout(injectWatchBtn, 300);
-        setTimeout(injectWatchBtn, 800);  // fallback jika 300ms belum cukup
-        setTimeout(injectWatchBtn, 1500); // fallback kedua untuk koneksi lambat
+        setTimeout(injectWatchBtn, 800);
+        setTimeout(injectWatchBtn, 1500);
     });
 
-    // ── FIX: MutationObserver sebagai fallback ──
-    // Watch untuk munculnya #top-level-buttons-computed atau ytd-watch-metadata
+    // MutationObserver fallback
     const watchBtnObserver = new MutationObserver(() => {
         if (!location.pathname.startsWith('/watch')) return;
-        if (document.querySelector('.ytdl-dl-btn')?.isConnected) return;
         const target = document.querySelector('#top-level-buttons-computed') ||
                        document.querySelector('ytd-watch-metadata #actions');
-        if (target) injectWatchBtn();
+        if (target && target.dataset.ytdlInjected !== '1') injectWatchBtn();
     });
     watchBtnObserver.observe(document.body, { childList: true, subtree: true });
 
-    // ── Inject saat pertama load (kalau langsung buka /watch) ──
+    // Inject saat pertama load
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', () => setTimeout(injectWatchBtn, 500));
     } else {
@@ -693,6 +683,8 @@
 
     /* ══════════════════════════════════════════════════════
        HOMEPAGE 3-DOT MENU INJECTION
+       Hanya menambah item "Download" — tidak menyembunyikan
+       item bawaan YouTube (Save, Thanks, Report, dll)
     ══════════════════════════════════════════════════════ */
     new MutationObserver(() => {
         document.querySelectorAll('ytd-menu-popup-renderer:not([ytdl-ok])').forEach(menu => {
