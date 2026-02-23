@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTube Downloader
 // @namespace    http://tampermonkey.net/
-// @version      8.2
-// @description  yt-dlp + Persistent + Homepage Menu + Grid/List + Speed + Size + Cancel + Scan Folder
+// @version      9.0
+// @description  yt-dlp + Persistent SSE + Homepage Menu + Grid/List + Speed + Size + Cancel + Scan Folder
 // @match        *://*.youtube.com/*
 // @grant        GM_xmlhttpRequest
 // @connect      localhost
@@ -10,999 +10,844 @@
 
 (function () {
     'use strict';
-    const API_URL = 'http://localhost:8989';
-    let lastHistoryCount = -1;
+    const API = 'http://localhost:8989';
     let libraryView = localStorage.getItem('ytdl_view') || 'grid';
     let uiScale = parseFloat(localStorage.getItem('ytdl_scale') || '1');
+    let lastHistoryLen = -1;
 
-    /* ─────────────────────────── STYLES ─────────────────────────── */
-    const css = `
-    #ytdl-fab {
-        position: fixed; bottom: 20px; right: 20px; width: 55px; height: 55px;
-        background: #ff0000; color: white; border-radius: 50%;
-        display: flex; align-items: center; justify-content: center;
-        cursor: pointer; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
-        z-index: 999999; font-size: 22px; transition: all 0.3s;
-        border: 2px solid rgba(255,255,255,0.2);
-    }
-    #ytdl-fab .fab-badge {
-        position: absolute; top: -4px; right: -4px;
-        background: #ffaa00; color: #000; border-radius: 50%;
-        width: 18px; height: 18px; font-size: 10px; font-weight: bold;
-        display: flex; align-items: center; justify-content: center;
-    }
-    .ytdl-mini-popup {
-        display: none; position: fixed; top: 50%; left: 50%;
-        transform: translate(-50%, -50%);
-        background: #181818; color: white; padding: 22px;
-        border-radius: 14px; z-index: 10000000; width: 330px;
-        box-shadow: 0 0 40px rgba(0,0,0,0.9); border: 1px solid #3a3a3a;
-        text-align: center;
-    }
-    .ytdl-mini-popup.active { display: block; }
-    .ytdl-mini-popup h3 { margin: 0 0 6px; font-size: 15px; }
-    .ytdl-mini-popup .popup-subtitle { font-size: 11px; color: #888; margin-bottom: 14px; }
-    .q-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-    .q-mini-btn {
-        background: #2a2a2a; color: white; border: 1px solid #444;
-        padding: 12px 8px; border-radius: 8px; cursor: pointer;
-        font-weight: bold; font-size: 13px; transition: all 0.2s;
-        display: flex; flex-direction: column; align-items: center; gap: 3px;
-    }
-    .q-mini-btn:hover { background: #ff0000; border-color: #ff0000; }
-    .q-mini-btn .q-size { font-size: 10px; color: #aaa; font-weight: normal; }
-    .q-mini-btn:hover .q-size { color: #ffc; }
+    /* ══════════════════════════════════════════════════════
+       CSS
+    ══════════════════════════════════════════════════════ */
+    document.head.appendChild(Object.assign(document.createElement('style'), { textContent: `
+    /* FAB */
+    #ytdl-fab{position:fixed;bottom:20px;right:20px;width:55px;height:55px;background:#e00;color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 15px rgba(0,0,0,.5);z-index:999999;font-size:22px;transition:all .3s;border:2px solid rgba(255,255,255,.2);user-select:none}
+    #ytdl-fab .badge{position:absolute;top:-4px;right:-4px;background:#fa0;color:#000;border-radius:50%;width:18px;height:18px;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center}
 
-    /* ─── MODAL ─── */
-    .ytdl-modal {
-        display: none; position: fixed; top: 0; left: 0;
-        width: 100%; height: 100%; background: rgba(0,0,0,0.96);
-        z-index: 9999999; color: white; box-sizing: border-box;
-    }
-    .ytdl-modal.active { display: flex; }
-    .ytdl-modal-inner {
-        display: grid; grid-template-columns: 1fr 420px;
-        gap: 20px; width: 100%; height: 100%; padding: 20px; box-sizing: border-box;
-        transform-origin: top left;
-    }
+    /* QUALITY POPUP */
+    #ytdl-popup{display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#181818;color:#fff;padding:22px;border-radius:14px;z-index:10000000;width:340px;box-shadow:0 0 40px rgba(0,0,0,.9);border:1px solid #3a3a3a;text-align:center}
+    #ytdl-popup.show{display:block}
+    #ytdl-popup h3{margin:0 0 5px;font-size:15px}
+    #ytdl-popup .sub{font-size:11px;color:#888;margin-bottom:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .q-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .q-btn{background:#2a2a2a;color:#fff;border:1px solid #444;padding:12px 8px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;transition:all .2s;display:flex;flex-direction:column;align-items:center;gap:3px}
+    .q-btn:hover{background:#e00;border-color:#e00}
+    .q-btn .q-sz{font-size:10px;color:#aaa;font-weight:400}
+    .q-btn:hover .q-sz{color:#ffc}
 
-    /* ─── LEFT PANEL ─── */
-    .main-p {
-        display: flex; flex-direction: column;
-        background: #000; border-radius: 14px; padding: 20px;
-        border: 1px solid #2a2a2a; overflow: hidden;
-    }
-    .main-p video {
-        width: 100%; border-radius: 10px; background: #111;
-        max-height: 52vh; flex-shrink: 0;
-    }
-    #p-title { font-size: 14px; margin: 0 0 12px; text-align: center; color: #ccc; min-height: 20px; }
+    /* MODAL */
+    #ytdl-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.97);z-index:9999999;color:#fff;box-sizing:border-box}
+    #ytdl-modal.show{display:flex}
+    #ytdl-inner{display:grid;grid-template-columns:1fr 430px;gap:20px;width:100%;height:100%;padding:20px;box-sizing:border-box;transform-origin:top left}
 
-    /* Scale slider */
-    .scale-row {
-        display: flex; align-items: center; gap: 10px;
-        margin-bottom: 14px; background: #111; border-radius: 8px;
-        padding: 8px 12px; border: 1px solid #2a2a2a;
-    }
-    .scale-row span { font-size: 11px; color: #666; white-space: nowrap; }
-    .scale-row input[type=range] { flex: 1; accent-color: #ff0000; cursor: pointer; }
-    .scale-row .scale-val { font-size: 11px; color: #aaa; min-width: 36px; text-align: right; }
+    /* LEFT PANEL */
+    .main-p{display:flex;flex-direction:column;background:#000;border-radius:14px;padding:20px;border:1px solid #222;overflow:hidden;min-height:0}
+    .main-p video{width:100%;border-radius:10px;background:#111;max-height:48vh;flex-shrink:0;transition:max-height .35s ease,opacity .35s ease,margin .35s ease}
+    .main-p.player-hidden video{max-height:0;opacity:0;margin:0;pointer-events:none}
+    .main-p.player-hidden #p-title{display:none}
+    #player-wrap{flex-shrink:0;transition:all .35s ease}
 
-    /* Active downloads */
-    #dl-panel { flex: 1; overflow-y: auto; margin-top: 14px; }
-    .dl-card {
-        background: #111; border: 1px solid #2a2a2a; border-radius: 10px;
-        padding: 12px; margin-bottom: 10px;
-    }
-    .dl-card-header {
-        display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
-    }
-    .dl-card-header img { width: 56px; height: 32px; border-radius: 4px; object-fit: cover; flex-shrink: 0; }
-    .dl-card-title { font-size: 11px; font-weight: bold; color: #ddd; line-height: 1.3; }
-    .dl-quality-badge {
-        background: #ff0000; color: white; font-size: 9px;
-        padding: 1px 5px; border-radius: 3px; font-weight: bold; flex-shrink: 0;
-    }
-    .dl-phase-label { font-size: 10px; color: #888; margin-bottom: 2px; display: flex; justify-content: space-between; }
-    .dl-phase-label .dl-speed { color: #ffaa00; }
-    .dl-phase-label .dl-eta { color: #888; }
-    .pbar-bg { width: 100%; height: 6px; background: #2a2a2a; border-radius: 3px; overflow: hidden; margin-bottom: 5px; }
-    .pbar-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease; width: 0%; }
-    .pbar-video { background: linear-gradient(90deg, #ff4444, #ff0000); }
-    .pbar-audio { background: linear-gradient(90deg, #4499ff, #3ea6ff); }
-    .pbar-merge { background: linear-gradient(90deg, #ffcc00, #ffaa00); animation: pulse 0.8s infinite alternate; }
-    @keyframes pulse { from { opacity: 0.7; } to { opacity: 1; } }
-    .dl-summary { display: flex; justify-content: space-between; font-size: 10px; color: #555; margin-top: 4px; }
-    .dl-empty { color: #333; font-size: 13px; text-align: center; margin-top: 30px; }
-    .dl-cancel-btn {
-        background: none; border: 1px solid #552222; color: #ff4444;
-        border-radius: 5px; padding: 3px 10px; font-size: 10px; cursor: pointer;
-        transition: all 0.2s; margin-top: 6px; align-self: flex-end;
-    }
-    .dl-cancel-btn:hover { background: #ff0000; border-color: #ff0000; color: white; }
-    .dl-cancelled-label { font-size: 11px; color: #ff4444; text-align: center; padding: 6px 0; }
+    /* Player toggle bar */
+    #player-toggle-bar{display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-shrink:0;cursor:pointer;user-select:none;padding:6px 10px;border-radius:8px;border:1px solid #1a1a1a;transition:background .2s}
+    #player-toggle-bar:hover{background:#111;border-color:#333}
+    #player-toggle-bar .ptb-title{flex:1;font-size:11px;color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    #player-toggle-bar .ptb-title.playing{color:#3ea6ff}
+    #player-toggle-bar .ptb-icon{font-size:14px;transition:transform .3s ease;flex-shrink:0}
+    #player-toggle-bar .ptb-icon.collapsed{transform:rotate(-90deg)}
+    #player-toggle-bar .ptb-badge{background:#222;color:#555;font-size:9px;padding:2px 6px;border-radius:4px;flex-shrink:0}
+    #player-toggle-bar .ptb-badge.active{background:#1a3a1a;color:#0c6}
 
-    /* ─── RIGHT PANEL ─── */
-    .side-p {
-        background: #0d0d0d; border-radius: 14px; padding: 18px;
-        border: 1px solid #2a2a2a; overflow-y: auto; display: flex; flex-direction: column;
-    }
-    .lib-header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-shrink: 0; }
-    .lib-header h3 { flex: 1; margin: 0; font-size: 14px; }
-    .view-btn {
-        background: #1e1e1e; border: 1px solid #333; color: #aaa;
-        padding: 5px 10px; border-radius: 6px; cursor: pointer; font-size: 15px;
-        transition: all 0.2s;
-    }
-    .view-btn.active { background: #ff0000; border-color: #ff0000; color: white; }
-    #h-list { flex: 1; }
+    #p-title{font-size:13px;margin:0 0 10px;text-align:center;color:#ccc;min-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .scale-row{display:flex;align-items:center;gap:8px;margin-bottom:12px;background:#111;border-radius:8px;padding:7px 12px;border:1px solid #222;flex-shrink:0}
+    .scale-row span{font-size:11px;color:#555;white-space:nowrap}
+    .scale-row input[type=range]{flex:1;accent-color:#e00;cursor:pointer}
+    .scale-val{font-size:11px;color:#aaa;min-width:34px;text-align:right}
 
-    /* Grid view */
-    #h-list.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-    #h-list.grid .v-card { flex-direction: column; gap: 0; }
-    #h-list.grid .v-card img { width: 100%; height: 72px; border-radius: 6px 6px 0 0; }
-    #h-list.grid .v-card .card-body { padding: 8px; }
+    /* DOWNLOAD CARDS */
+    #dl-panel{flex:1;overflow-y:auto;margin-top:12px;min-height:0}
+    .dl-card{background:#111;border:1px solid #222;border-radius:10px;padding:12px;margin-bottom:10px}
+    .dl-hdr{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+    .dl-hdr img{width:56px;height:32px;border-radius:4px;object-fit:cover;flex-shrink:0}
+    .dl-hdr-text{flex:1;font-size:11px;font-weight:700;color:#ddd;line-height:1.3;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+    .dl-badge{background:#e00;color:#fff;font-size:9px;padding:1px 5px;border-radius:3px;font-weight:700;flex-shrink:0}
+    .dl-row{display:flex;justify-content:space-between;font-size:10px;color:#666;margin-bottom:2px}
+    .dl-row .spd{color:#fa0}
+    .dl-row .eta{color:#666}
+    .pbar{width:100%;height:6px;background:#222;border-radius:3px;overflow:hidden;margin-bottom:5px}
+    .pbar-fill{height:100%;border-radius:3px;transition:width .4s ease;width:0}
+    .pbar-v{background:linear-gradient(90deg,#f44,#e00)}
+    .pbar-a{background:linear-gradient(90deg,#48f,#3ea6ff)}
+    .pbar-m{background:linear-gradient(90deg,#fc0,#fa0);animation:blink .7s infinite alternate}
+    @keyframes blink{from{opacity:.6}to{opacity:1}}
+    .dl-foot{display:flex;justify-content:space-between;align-items:center;margin-top:5px}
+    .dl-status{font-size:10px}
+    .dl-cancel{background:none;border:1px solid #522;color:#f44;border-radius:5px;padding:3px 10px;font-size:10px;cursor:pointer;transition:all .2s}
+    .dl-cancel:hover{background:#e00;border-color:#e00;color:#fff}
+    .dl-cancel:disabled{opacity:.4;cursor:not-allowed}
+    .dl-empty{color:#333;font-size:13px;text-align:center;margin-top:30px}
 
-    /* List view */
-    #h-list.list { display: flex; flex-direction: column; gap: 8px; }
-    #h-list.list .v-card { flex-direction: row; align-items: center; }
-    #h-list.list .v-card img { width: 90px; height: 50px; border-radius: 6px; flex-shrink: 0; }
-    #h-list.list .v-card .card-body { padding: 0 8px; flex: 1; }
+    #close-ytdl{flex-shrink:0;margin-top:10px;background:#1a1a1a;color:#888;border:1px solid #333;padding:9px 36px;border-radius:20px;cursor:pointer;font-weight:700;align-self:center;transition:all .2s}
+    #close-ytdl:hover{background:#333;color:#fff}
 
-    .v-card {
-        display: flex; background: #1a1a1a; border-radius: 8px;
-        border: 1px solid #2a2a2a; overflow: hidden;
-        transition: border-color 0.2s; position: relative;
-    }
-    .v-card:hover { border-color: #555; }
-    .v-card .card-body { flex: 1; min-width: 0; }
-    .v-card .card-title {
-        font-size: 10px; font-weight: bold; line-height: 1.3;
-        color: #ddd; margin-bottom: 4px;
-        overflow: hidden; text-overflow: ellipsis;
-        display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-    }
-    .v-card .card-tags { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-bottom: 6px; }
-    .v-card .tag-quality { background: #ff0000; color: white; padding: 1px 5px; border-radius: 3px; font-size: 9px; font-weight: bold; }
-    .v-card .tag-size { background: #2a2a2a; color: #888; padding: 1px 5px; border-radius: 3px; font-size: 9px; }
-    .v-card .card-actions { display: flex; gap: 5px; }
-    .v-card .play-b {
-        background: #3ea6ff; border: none; color: white;
-        padding: 4px 10px; border-radius: 5px; cursor: pointer;
-        font-size: 10px; font-weight: bold;
-    }
-    .v-card .del-b {
-        background: none; border: none; color: #ff4444;
-        cursor: pointer; font-size: 14px; padding: 2px 6px;
-        position: absolute; top: 6px; right: 6px;
-    }
+    /* RIGHT PANEL */
+    .side-p{background:#0d0d0d;border-radius:14px;padding:18px;border:1px solid #222;display:flex;flex-direction:column;overflow:hidden;min-height:0}
+    .lib-tabs{display:flex;gap:4px;margin-bottom:10px;flex-shrink:0}
+    .lib-tab{flex:1;padding:7px 0;background:#1a1a1a;border:1px solid #222;border-radius:7px;color:#555;font-size:12px;font-weight:700;cursor:pointer;text-align:center;transition:all .2s}
+    .lib-tab.active{background:#e00;border-color:#e00;color:#fff}
+    .lib-hdr{display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-shrink:0}
+    .lib-hdr h3{flex:1;margin:0;font-size:13px}
+    .vbtn{background:#1a1a1a;border:1px solid #333;color:#888;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:15px;transition:all .2s}
+    .vbtn.active{background:#e00;border-color:#e00;color:#fff}
 
-    /* Close btn */
-    #close-ytdl {
-        flex-shrink: 0; margin-top: 12px; background: #1e1e1e;
-        color: #aaa; border: 1px solid #333; padding: 9px 36px;
-        border-radius: 20px; cursor: pointer; font-weight: bold;
-        align-self: center; transition: all 0.2s;
-    }
-    #close-ytdl:hover { background: #333; color: white; }
+    /* HISTORY CARDS */
+    #h-list{flex:1;overflow-y:auto;min-height:0;padding-right:2px}
+    #h-list.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;align-content:start}
+    #h-list.list{display:flex;flex-direction:column;gap:6px}
 
-    /* ─── TABS (History / Scan) ─── */
-    .lib-tabs { display: flex; gap: 4px; margin-bottom: 10px; flex-shrink: 0; }
-    .lib-tab {
-        flex: 1; padding: 7px 0; background: #1a1a1a; border: 1px solid #2a2a2a;
-        border-radius: 7px; color: #666; font-size: 12px; font-weight: bold;
-        cursor: pointer; text-align: center; transition: all 0.2s;
-    }
-    .lib-tab.active { background: #ff0000; border-color: #ff0000; color: white; }
+    .v-card{display:flex;background:#111;border-radius:10px;border:1px solid #222;overflow:hidden;position:relative;transition:border-color .2s}
+    .v-card:hover{border-color:#555}
 
-    /* ─── SCAN PANEL ─── */
-    #scan-panel { display: none; flex-direction: column; flex: 1; overflow: hidden; }
-    #scan-panel.active { display: flex; }
-    #history-panel { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
-    #history-panel.hidden { display: none; }
+    /* GRID — card is 16:9 box, thumbnail absolute, .cb overlay fades in on hover */
+    #h-list.grid .v-card{flex-direction:column;aspect-ratio:16/9;cursor:pointer}
+    #h-list.grid .thumb-wrap{position:absolute;inset:0;background:#0a0a0a;overflow:hidden;z-index:0}
+    #h-list.grid .thumb-wrap img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .3s ease}
+    #h-list.grid .v-card:hover .thumb-wrap img{transform:scale(1.05)}
+    #h-list.grid .thumb-wrap .no-thumb{width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:30px;color:#252525}
+    #h-list.grid .thumb-quality{position:absolute;bottom:6px;right:6px;z-index:4;background:rgba(0,0,0,.88);color:#fff;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;pointer-events:none}
+    #h-list.grid .del-b{position:absolute;top:6px;left:6px;z-index:5;background:rgba(0,0,0,.75);border:none;color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;padding:0;cursor:pointer;opacity:0;transition:opacity .18s;line-height:1}
+    #h-list.grid .v-card:hover .del-b{opacity:1}
+    #h-list.grid .del-b:hover{background:rgba(180,0,0,.9)!important}
+    #h-list.grid .cb{position:absolute;inset:0;z-index:3;display:flex;flex-direction:column;justify-content:flex-end;padding:10px;background:linear-gradient(to top,rgba(0,0,0,.95) 0%,rgba(0,0,0,.6) 50%,transparent 100%);opacity:0;transition:opacity .2s ease;pointer-events:none;box-sizing:border-box}
+    #h-list.grid .v-card:hover .cb{opacity:1;pointer-events:auto}
+    #h-list.grid .card-title{font-size:11px;font-weight:700;color:#fff;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-overflow:ellipsis;margin:0 0 5px;text-shadow:0 1px 4px #000}
+    #h-list.grid .card-tags{display:flex;gap:4px;flex-wrap:wrap;margin:0 0 7px;align-items:center}
+    #h-list.grid .card-acts{display:flex;gap:5px}
 
-    .scan-toolbar {
-        display: flex; gap: 6px; align-items: center; margin-bottom: 10px; flex-shrink: 0; flex-wrap: wrap;
-    }
-    .scan-folder-list { margin-bottom: 10px; flex-shrink: 0; }
-    .scan-folder-item {
-        display: flex; align-items: center; gap: 6px;
-        background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 6px;
-        padding: 6px 10px; margin-bottom: 5px; font-size: 11px; color: #aaa;
-    }
-    .scan-folder-item .folder-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .scan-folder-item .folder-remove {
-        background: none; border: none; color: #ff4444; cursor: pointer; font-size: 13px; flex-shrink: 0;
-    }
-    .scan-folder-item .folder-badge {
-        background: #222; color: #666; font-size: 9px; padding: 2px 5px; border-radius: 3px; flex-shrink: 0;
-    }
-    .scan-add-row { display: flex; gap: 6px; margin-bottom: 10px; flex-shrink: 0; }
-    .scan-add-row input {
-        flex: 1; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 6px;
-        padding: 7px 10px; color: white; font-size: 11px; outline: none;
-    }
-    .scan-add-row input:focus { border-color: #ff0000; }
-    .scan-btn {
-        background: #1e1e1e; border: 1px solid #333; color: #ccc; border-radius: 6px;
-        padding: 7px 12px; cursor: pointer; font-size: 11px; font-weight: bold; white-space: nowrap;
-        transition: all 0.2s; flex-shrink: 0;
-    }
-    .scan-btn:hover { background: #333; color: white; }
-    .scan-btn.primary { background: #ff0000; border-color: #ff0000; color: white; }
-    .scan-btn.primary:hover { background: #cc0000; }
-    .scan-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    /* LIST — thumb left, info right */
+    #h-list.list .v-card{flex-direction:row;align-items:stretch;min-height:76px}
+    #h-list.list .thumb-wrap{position:relative;width:140px;min-width:140px;flex-shrink:0;background:#0a0a0a;overflow:hidden}
+    #h-list.list .thumb-wrap img{width:100%;height:100%;object-fit:cover;display:block}
+    #h-list.list .thumb-wrap .no-thumb{width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:22px;color:#252525}
+    #h-list.list .thumb-quality{position:absolute;bottom:4px;right:4px;background:rgba(0,0,0,.88);color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px}
+    #h-list.list .del-b{position:absolute;top:8px;right:8px;background:none;border:none;color:#444;font-size:14px;padding:3px;cursor:pointer;transition:color .15s;border-radius:4px;line-height:1;z-index:2}
+    #h-list.list .del-b:hover{color:#f44;background:rgba(255,60,60,.1)}
+    #h-list.list .cb{padding:10px 38px 10px 12px;flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:5px;position:static;opacity:1;pointer-events:auto;background:none}
+    #h-list.list .card-title{font-size:11px;font-weight:700;color:#ddd;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-overflow:ellipsis;margin:0}
+    #h-list.list .card-tags{display:flex;gap:4px;flex-wrap:wrap;margin:0;align-items:center}
+    #h-list.list .card-acts{display:flex;gap:5px;margin:0}
 
-    #scan-results { flex: 1; overflow-y: auto; }
-    #scan-results.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    #scan-results.list { display: flex; flex-direction: column; gap: 6px; }
+    /* thumb-quality and del-b as direct children of .v-card */
+    .v-card > .thumb-quality{position:absolute;z-index:4;pointer-events:none}
+    .v-card > .del-b{position:absolute;z-index:5}
 
-    .scan-card {
-        background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px;
-        overflow: hidden; position: relative; transition: border-color 0.2s;
-    }
-    .scan-card:hover { border-color: #555; }
-    #scan-results.grid .scan-card { display: flex; flex-direction: column; }
-    #scan-results.grid .scan-card .sc-thumb {
-        width: 100%; height: 70px; background: #111; display: flex; align-items: center;
-        justify-content: center; font-size: 28px; flex-shrink: 0;
-    }
-    #scan-results.grid .scan-card .sc-body { padding: 8px; }
-    #scan-results.list .scan-card { display: flex; align-items: center; gap: 8px; padding: 8px; }
-    #scan-results.list .scan-card .sc-thumb {
-        width: 44px; height: 44px; background: #111; border-radius: 6px;
-        display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0;
-    }
-    #scan-results.list .scan-card .sc-body { flex: 1; min-width: 0; }
+    /* Shared */
+    .thumb-wrap{position:relative}
+    .tag{padding:2px 6px;border-radius:4px;font-size:9px;font-weight:600;white-space:nowrap}
+    .tag-s{background:#252525;color:#aaa}
+    .tag-f{background:#0d1f30;color:#3ea6ff}
+    .play-b{background:#3ea6ff;border:none;color:#fff;padding:5px 12px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:700;transition:background .15s}
+    .play-b:hover{background:#1a8fd1}
+    .del-b{cursor:pointer;border:none;background:none;transition:color .15s}
 
-    .sc-title {
-        font-size: 10px; font-weight: bold; color: #ddd; line-height: 1.3; margin-bottom: 4px;
-        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    }
-    .sc-meta { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; margin-bottom: 5px; }
-    .sc-tag { background: #2a2a2a; color: #888; padding: 1px 5px; border-radius: 3px; font-size: 9px; }
-    .sc-tag.folder { color: #3ea6ff; }
-    .sc-actions { display: flex; gap: 4px; }
-    .sc-play-btn {
-        background: #3ea6ff; border: none; color: white; padding: 3px 9px;
-        border-radius: 4px; cursor: pointer; font-size: 10px; font-weight: bold;
-    }
-    .sc-add-btn {
-        background: #2a2a2a; border: 1px solid #444; color: #aaa; padding: 3px 9px;
-        border-radius: 4px; cursor: pointer; font-size: 10px; transition: all 0.2s;
-    }
-    .sc-add-btn:hover { background: #00aa55; border-color: #00aa55; color: white; }
-    .sc-in-library { background: #003322; border: 1px solid #00aa55; color: #00cc66; }
-    .sc-empty { color: #333; font-size: 13px; text-align: center; margin-top: 40px; }
-    .scan-stats { font-size: 10px; color: #555; margin-bottom: 8px; flex-shrink: 0; }
+        /* SCAN PANEL */
+    #scan-panel{display:none;flex-direction:column;flex:1;overflow:hidden;min-height:0}
+    #scan-panel.show{display:flex}
+    #hist-panel{display:flex;flex-direction:column;flex:1;overflow:hidden;min-height:0}
+    #hist-panel.hidden{display:none}
+    .folder-list{flex-shrink:0;margin-bottom:8px}
+    .folder-item{display:flex;align-items:center;gap:6px;background:#1a1a1a;border:1px solid #222;border-radius:6px;padding:6px 10px;margin-bottom:4px;font-size:11px;color:#aaa}
+    .folder-item .fp{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .folder-item .fbadge{background:#222;color:#555;font-size:9px;padding:1px 5px;border-radius:3px;flex-shrink:0}
+    .folder-item .frem{background:none;border:none;color:#f44;cursor:pointer;font-size:13px;flex-shrink:0}
+    .add-row{display:flex;gap:6px;margin-bottom:8px;flex-shrink:0}
+    .add-row input{flex:1;background:#1a1a1a;border:1px solid #222;border-radius:6px;padding:7px 10px;color:#fff;font-size:11px;outline:none}
+    .add-row input:focus{border-color:#e00}
+    .sbtn{background:#1a1a1a;border:1px solid #333;color:#ccc;border-radius:6px;padding:7px 12px;cursor:pointer;font-size:11px;font-weight:700;white-space:nowrap;transition:all .2s;flex-shrink:0}
+    .sbtn:hover{background:#333;color:#fff}
+    .sbtn.red{background:#e00;border-color:#e00;color:#fff}
+    .sbtn.red:hover{background:#b00}
+    .sbtn:disabled{opacity:.4;cursor:not-allowed}
+    .scan-bar{display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-shrink:0}
+    .scan-stats{font-size:10px;color:#555;flex:1}
+    #scan-list{flex:1;overflow-y:auto;min-height:0}
+    #scan-list.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    #scan-list.list{display:flex;flex-direction:column;gap:6px}
+    .sc-card{background:#1a1a1a;border:1px solid #222;border-radius:8px;overflow:hidden;transition:border-color .2s}
+    .sc-card:hover{border-color:#555}
+    #scan-list.grid .sc-card{display:flex;flex-direction:column}
+    #scan-list.grid .sc-thumb{width:100%;height:68px;background:#111;display:flex;align-items:center;justify-content:center;font-size:26px;flex-shrink:0}
+    #scan-list.grid .sc-body{padding:7px}
+    #scan-list.list .sc-card{display:flex;align-items:center;gap:8px;padding:8px}
+    #scan-list.list .sc-thumb{width:44px;height:44px;background:#111;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
+    #scan-list.list .sc-body{flex:1;min-width:0}
+    .sc-title{font-size:10px;font-weight:700;color:#ddd;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .sc-meta{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:5px;align-items:center}
+    .sc-acts{display:flex;gap:4px}
+    .sc-play{background:#3ea6ff;border:none;color:#fff;padding:3px 9px;border-radius:4px;cursor:pointer;font-size:10px;font-weight:700}
+    .sc-add{background:#1a1a1a;border:1px solid #333;color:#aaa;padding:3px 9px;border-radius:4px;cursor:pointer;font-size:10px;transition:all .2s}
+    .sc-add:hover{background:#0a5;border-color:#0a5;color:#fff}
+    .sc-add.in-lib{background:#031a0c;border-color:#0a5;color:#0d5}
+    .sc-empty{color:#333;font-size:13px;text-align:center;margin-top:40px}
 
-    /* Context menu */
-    .ytdl-ctx {
-        position: fixed; background: #1e1e1e; border: 1px solid #3a3a3a;
-        border-radius: 10px; padding: 6px 0; z-index: 99999999;
-        min-width: 180px; box-shadow: 0 6px 24px rgba(0,0,0,0.8);
-    }
-    .ytdl-ctx-item {
-        padding: 10px 16px; cursor: pointer; font-size: 13px;
-        color: white; display: flex; align-items: center; gap: 10px;
-        transition: background 0.15s;
-    }
-    .ytdl-ctx-item:hover { background: #333; }
+    /* INJECT BTN */
+    .ytdl-dl-btn{background:#e00;color:#fff;border-radius:18px;padding:8px 16px;cursor:pointer;font-weight:700;border:none;margin-left:8px;font-size:12px;transition:background .2s}
+    .ytdl-dl-btn:hover{background:#b00}
+    ` }));
 
-    /* Download inject button (watch page) */
-    .ytdl-trigger-btn {
-        background: #ff0000; color: white; border-radius: 18px;
-        padding: 8px 16px; cursor: pointer; font-weight: bold;
-        border: none; margin-left: 8px; font-size: 12px;
-        transition: background 0.2s;
-    }
-    .ytdl-trigger-btn:hover { background: #cc0000; }
-    `;
-    const styleEl = document.createElement('style');
-    styleEl.textContent = css;
-    document.head.appendChild(styleEl);
+    /* ══════════════════════════════════════════════════════
+       MODAL HTML
+    ══════════════════════════════════════════════════════ */
+    document.body.insertAdjacentHTML('beforeend', `
+    <div id="ytdl-modal">
+      <div id="ytdl-inner">
+        <!-- LEFT -->
+        <div class="main-p" id="main-p">
+          <div class="scale-row">
+            <span>🔍 Scale</span>
+            <input type="range" id="scale-sl" min="0.6" max="1.4" step="0.05" value="${uiScale}">
+            <span class="scale-val" id="scale-lbl">${Math.round(uiScale*100)}%</span>
+          </div>
 
-    /* ─────────────────────────── MODAL HTML ─────────────────────────── */
-    const modal = document.createElement('div');
-    modal.className = 'ytdl-modal';
-    modal.innerHTML = `
-    <div class="ytdl-modal-inner" id="ytdl-inner">
-        <!-- LEFT: Player + Active Downloads -->
-        <div class="main-p">
-            <div class="scale-row">
-                <span>🔍 Scale</span>
-                <input type="range" id="scale-slider" min="0.6" max="1.4" step="0.05" value="${uiScale}">
-                <span class="scale-val" id="scale-val">${Math.round(uiScale * 100)}%</span>
-            </div>
+          <!-- Collapsible player toggle bar -->
+          <div id="player-toggle-bar">
+            <span class="ptb-icon" id="ptb-icon">▼</span>
+            <span class="ptb-title" id="ptb-title">Player</span>
+            <span class="ptb-badge" id="ptb-badge">Idle</span>
+          </div>
+
+          <!-- Player section (collapsible) -->
+          <div id="player-wrap">
             <p id="p-title">Library & Player</p>
             <video id="v-player" controls></video>
-            <div id="dl-panel">
-                <p class="dl-empty" id="dl-empty">Tidak ada unduhan aktif</p>
-            </div>
-            <button id="close-ytdl">✕ TUTUP</button>
-        </div>
+          </div>
 
-        <!-- RIGHT: Library (History + Scan) -->
+          <div id="dl-panel"><p class="dl-empty">Tidak ada unduhan aktif</p></div>
+          <button id="close-ytdl">✕ TUTUP</button>
+        </div>
+        <!-- RIGHT -->
         <div class="side-p">
-            <!-- Tab switcher -->
-            <div class="lib-tabs">
-                <button class="lib-tab active" id="tab-history">📁 Riwayat</button>
-                <button class="lib-tab" id="tab-scan">🔍 Scan Folder</button>
+          <div class="lib-tabs">
+            <button class="lib-tab active" id="tab-hist">📁 Riwayat</button>
+            <button class="lib-tab" id="tab-scan">🔍 Scan Folder</button>
+          </div>
+          <!-- HISTORY -->
+          <div id="hist-panel">
+            <div class="lib-hdr">
+              <h3>Unduhan Sesi Ini</h3>
+              <button class="vbtn ${libraryView==='grid'?'active':''}" id="hbtn-grid">⊞</button>
+              <button class="vbtn ${libraryView==='list'?'active':''}" id="hbtn-list">≡</button>
             </div>
-
-            <!-- HISTORY PANEL -->
-            <div id="history-panel">
-                <div class="lib-header">
-                    <h3 style="flex:1;margin:0;font-size:13px;">Unduhan Sesi Ini</h3>
-                    <button class="view-btn ${libraryView === 'grid' ? 'active' : ''}" id="btn-grid" title="Grid">⊞</button>
-                    <button class="view-btn ${libraryView === 'list' ? 'active' : ''}" id="btn-list" title="List">≡</button>
-                </div>
-                <div id="h-list" class="${libraryView}"></div>
+            <div id="h-list" class="${libraryView}"></div>
+          </div>
+          <!-- SCAN -->
+          <div id="scan-panel">
+            <div class="folder-list" id="folder-list"></div>
+            <div class="add-row">
+              <input id="folder-input" placeholder="Path folder, mis: /home/user/Videos">
+              <button class="sbtn" id="folder-add-btn">+ Tambah</button>
             </div>
-
-            <!-- SCAN PANEL -->
-            <div id="scan-panel">
-                <!-- Folder list -->
-                <div id="scan-folder-list" class="scan-folder-list"></div>
-
-                <!-- Add folder input -->
-                <div class="scan-add-row">
-                    <input type="text" id="scan-folder-input" placeholder="Path folder, mis: /home/user/Videos">
-                    <button class="scan-btn" id="scan-add-folder-btn">+ Tambah</button>
-                </div>
-
-                <!-- Scan actions -->
-                <div class="scan-toolbar">
-                    <button class="scan-btn primary" id="scan-run-btn">🔍 Scan Sekarang</button>
-                    <span class="scan-stats" id="scan-stats"></span>
-                    <div style="flex:1"></div>
-                    <button class="view-btn ${libraryView === 'grid' ? 'active' : ''}" id="scan-btn-grid" title="Grid">⊞</button>
-                    <button class="view-btn ${libraryView === 'list' ? 'active' : ''}" id="scan-btn-list" title="List">≡</button>
-                </div>
-
-                <!-- Results -->
-                <div id="scan-results" class="${libraryView}">
-                    <p class="sc-empty">Klik "Scan Sekarang" untuk memindai video di folder yang terdaftar.</p>
-                </div>
+            <div class="scan-bar">
+              <button class="sbtn red" id="scan-btn">🔍 Scan Sekarang</button>
+              <span class="scan-stats" id="scan-stats"></span>
+              <button class="vbtn ${libraryView==='grid'?'active':''}" id="sbtn-grid">⊞</button>
+              <button class="vbtn ${libraryView==='list'?'active':''}" id="sbtn-list">≡</button>
             </div>
+            <div id="scan-list" class="${libraryView}"><p class="sc-empty">Klik "Scan Sekarang" untuk memindai.</p></div>
+          </div>
         </div>
-    </div>`;
-    document.body.appendChild(modal);
+      </div>
+    </div>
 
-    /* ─────────────────────────── MINI POPUP ─────────────────────────── */
-    const miniPopup = document.createElement('div');
-    miniPopup.className = 'ytdl-mini-popup';
-    miniPopup.innerHTML = `
-        <h3>⬇ Pilih Kualitas</h3>
-        <p class="popup-subtitle" id="q-popup-title"></p>
-        <div id="q-mini-list" class="q-grid">Menganalisis...</div>
-        <button id="close-mini" style="margin-top:16px;background:none;border:none;color:#555;cursor:pointer;font-size:13px;">Batal</button>
-    `;
-    document.body.appendChild(miniPopup);
+    <!-- QUALITY POPUP -->
+    <div id="ytdl-popup">
+      <h3>⬇ Pilih Kualitas</h3>
+      <p class="sub" id="popup-title"></p>
+      <div id="q-list" class="q-grid"></div>
+      <button id="popup-cancel" style="margin-top:14px;background:none;border:none;color:#555;cursor:pointer;font-size:13px">Batal</button>
+    </div>
 
-    /* ─────────────────────────── FAB ─────────────────────────── */
-    const fab = document.createElement('div');
-    fab.id = 'ytdl-fab';
-    fab.innerHTML = '📂';
-    fab.onclick = () => { modal.classList.add('active'); loadHistory(); };
-    document.body.appendChild(fab);
+    <!-- FAB -->
+    <div id="ytdl-fab">📂</div>
+    `);
 
-    /* ─────────────────────────── SCALE SLIDER ─────────────────────────── */
-    document.getElementById('scale-slider').oninput = function () {
-        uiScale = parseFloat(this.value);
-        localStorage.setItem('ytdl_scale', uiScale);
-        document.getElementById('scale-val').textContent = Math.round(uiScale * 100) + '%';
-        applyScale();
-    };
-    function applyScale() {
-        const inner = document.getElementById('ytdl-inner');
-        if (inner) {
-            inner.style.transform = `scale(${uiScale})`;
-            inner.style.transformOrigin = 'top left';
-            inner.style.width = `${100 / uiScale}%`;
-            inner.style.height = `${100 / uiScale}%`;
+    const modal  = document.getElementById('ytdl-modal');
+    const popup  = document.getElementById('ytdl-popup');
+    const fab    = document.getElementById('ytdl-fab');
+    const player = document.getElementById('v-player');
+
+    /* ══════════════════════════════════════════════════════
+       PLAYER TOGGLE
+    ══════════════════════════════════════════════════════ */
+    let playerVisible = localStorage.getItem('ytdl_player') !== 'hidden';
+
+    function applyPlayerVisibility() {
+        const mainP = document.getElementById('main-p');
+        const wrap  = document.getElementById('player-wrap');
+        const icon  = document.getElementById('ptb-icon');
+        mainP.classList.toggle('player-hidden', !playerVisible);
+        icon.classList.toggle('collapsed', !playerVisible);
+        wrap.style.overflow = 'hidden';
+        if (!playerVisible) {
+            wrap.style.maxHeight = '0';
+            wrap.style.opacity   = '0';
+            wrap.style.marginBottom = '0';
+        } else {
+            wrap.style.maxHeight = '70vh';
+            wrap.style.opacity   = '1';
+            wrap.style.marginBottom = '10px';
         }
     }
-    applyScale();
+    // Set up smooth transition on wrap
+    document.getElementById('player-wrap').style.transition = 'max-height .35s ease, opacity .35s ease, margin-bottom .35s ease';
+    applyPlayerVisibility();
 
-    /* ─────────────────────────── VIEW TOGGLE ─────────────────────────── */
-    document.getElementById('btn-grid').onclick = () => setView('grid');
-    document.getElementById('btn-list').onclick = () => setView('list');
-    document.getElementById('scan-btn-grid').onclick = () => setView('grid');
-    document.getElementById('scan-btn-list').onclick = () => setView('list');
+    document.getElementById('player-toggle-bar').onclick = () => {
+        playerVisible = !playerVisible;
+        localStorage.setItem('ytdl_player', playerVisible ? 'visible' : 'hidden');
+        if (!playerVisible) player.pause();
+        applyPlayerVisibility();
+    };
+
+    // Update toggle bar status text based on what's playing / downloading
+    function updateToggleBar(nowPlayingTitle, activeCount) {
+        const titleEl = document.getElementById('ptb-title');
+        const badge   = document.getElementById('ptb-badge');
+        if (nowPlayingTitle) {
+            titleEl.textContent = `▶ ${nowPlayingTitle}`;
+            titleEl.className = 'ptb-title playing';
+        } else {
+            titleEl.textContent = playerVisible ? 'Sembunyikan Player' : 'Tampilkan Player';
+            titleEl.className = 'ptb-title';
+        }
+        if (activeCount > 0) {
+            badge.textContent = `${activeCount} aktif`;
+            badge.className = 'ptb-badge active';
+        } else {
+            badge.textContent = player.src && !player.paused ? '▶ Playing' : 'Idle';
+            badge.className = 'ptb-badge';
+        }
+    }
+    updateToggleBar('', 0);
+
+    /* ══════════════════════════════════════════════════════
+       SCALE
+    ══════════════════════════════════════════════════════ */
+    function applyScale() {
+        const inner = document.getElementById('ytdl-inner');
+        inner.style.transform = `scale(${uiScale})`;
+        inner.style.width  = `${100/uiScale}%`;
+        inner.style.height = `${100/uiScale}%`;
+    }
+    applyScale();
+    document.getElementById('scale-sl').oninput = function() {
+        uiScale = parseFloat(this.value);
+        localStorage.setItem('ytdl_scale', uiScale);
+        document.getElementById('scale-lbl').textContent = Math.round(uiScale*100) + '%';
+        applyScale();
+    };
+
+    /* ══════════════════════════════════════════════════════
+       VIEW TOGGLE
+    ══════════════════════════════════════════════════════ */
     function setView(v) {
         libraryView = v;
         localStorage.setItem('ytdl_view', v);
         document.getElementById('h-list').className = v;
-        document.getElementById('scan-results').className = v;
-        ['btn-grid','scan-btn-grid'].forEach(id => document.getElementById(id).classList.toggle('active', v === 'grid'));
-        ['btn-list','scan-btn-list'].forEach(id => document.getElementById(id).classList.toggle('active', v === 'list'));
+        document.getElementById('scan-list').className = v;
+        ['hbtn-grid','sbtn-grid'].forEach(id => document.getElementById(id).classList.toggle('active', v==='grid'));
+        ['hbtn-list','sbtn-list'].forEach(id => document.getElementById(id).classList.toggle('active', v==='list'));
     }
+    document.getElementById('hbtn-grid').onclick = () => setView('grid');
+    document.getElementById('hbtn-list').onclick = () => setView('list');
+    document.getElementById('sbtn-grid').onclick = () => setView('grid');
+    document.getElementById('sbtn-list').onclick = () => setView('list');
 
-    /* ─────────────────────────── TABS ─────────────────────────── */
-    document.getElementById('tab-history').onclick = () => switchTab('history');
-    document.getElementById('tab-scan').onclick = () => { switchTab('scan'); loadScanConfig(); };
-    function switchTab(tab) {
-        document.getElementById('tab-history').classList.toggle('active', tab === 'history');
-        document.getElementById('tab-scan').classList.toggle('active', tab === 'scan');
-        document.getElementById('history-panel').classList.toggle('hidden', tab !== 'history');
-        document.getElementById('scan-panel').classList.toggle('active', tab === 'scan');
+    /* ══════════════════════════════════════════════════════
+       TABS
+    ══════════════════════════════════════════════════════ */
+    function switchTab(t) {
+        document.getElementById('tab-hist').classList.toggle('active', t==='hist');
+        document.getElementById('tab-scan').classList.toggle('active', t==='scan');
+        document.getElementById('hist-panel').classList.toggle('hidden', t!=='hist');
+        document.getElementById('scan-panel').classList.toggle('show', t==='scan');
+        if (t==='scan') loadScanConfig();
     }
+    document.getElementById('tab-hist').onclick = () => switchTab('hist');
+    document.getElementById('tab-scan').onclick = () => switchTab('scan');
 
-    /* ─────────────────────────── SCAN FOLDER MANAGEMENT ─────────────────────────── */
-    let scanFolders = [];
-    let mainDownloadFolder = '';
+    /* ══════════════════════════════════════════════════════
+       FAB + MODAL
+    ══════════════════════════════════════════════════════ */
+    fab.onclick = () => { modal.classList.add('show'); loadHistory(); };
+    document.getElementById('close-ytdl').onclick = () => { modal.classList.remove('show'); player.pause(); };
+    document.getElementById('popup-cancel').onclick = () => popup.classList.remove('show');
 
-    function loadScanConfig() {
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url: `${API_URL}/api/config`,
-            onload: (res) => {
-                const cfg = JSON.parse(res.responseText);
-                mainDownloadFolder = cfg.downloadFolder;
-                scanFolders = cfg.scanFolders || [];
-                renderFolderList();
-            }
-        });
+    /* ══════════════════════════════════════════════════════
+       SSE — stored on unsafeWindow so it persists across SPA navigation
+    ══════════════════════════════════════════════════════ */
+    const _w = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+    if (!_w.__ytdlSSE || _w.__ytdlSSE.readyState === EventSource.CLOSED) {
+        _w.__ytdlSSE = new EventSource(`${API}/api/events`);
+        _w.__ytdlProg = {};
     }
-
-    function renderFolderList() {
-        const list = document.getElementById('scan-folder-list');
-        list.innerHTML = '';
-
-        // Main download folder (always first, not removable)
-        const mainItem = document.createElement('div');
-        mainItem.className = 'scan-folder-item';
-        mainItem.innerHTML = `
-            <span style="font-size:14px">📥</span>
-            <span class="folder-path" title="${mainDownloadFolder}">${mainDownloadFolder}</span>
-            <span class="folder-badge">Utama</span>
-        `;
-        list.appendChild(mainItem);
-
-        // Extra scan folders
-        scanFolders.forEach((folder, idx) => {
-            const item = document.createElement('div');
-            item.className = 'scan-folder-item';
-            item.innerHTML = `
-                <span style="font-size:14px">📂</span>
-                <span class="folder-path" title="${folder}">${folder}</span>
-                <button class="folder-remove" data-idx="${idx}" title="Hapus folder ini">✕</button>
-            `;
-            item.querySelector('.folder-remove').onclick = function () {
-                scanFolders.splice(parseInt(this.dataset.idx), 1);
-                saveScanFolders();
-                renderFolderList();
-            };
-            list.appendChild(item);
-        });
-    }
-
-    function saveScanFolders() {
-        GM_xmlhttpRequest({
-            method: 'POST',
-            url: `${API_URL}/api/config`,
-            headers: { 'Content-Type': 'application/json' },
-            data: JSON.stringify({ scanFolders })
-        });
-    }
-
-    document.getElementById('scan-add-folder-btn').onclick = () => {
-        const input = document.getElementById('scan-folder-input');
-        const val = input.value.trim();
-        if (!val) return;
-        if (!scanFolders.includes(val) && val !== mainDownloadFolder) {
-            scanFolders.push(val);
-            saveScanFolders();
-            renderFolderList();
-        }
-        input.value = '';
-    };
-    document.getElementById('scan-folder-input').onkeydown = (e) => {
-        if (e.key === 'Enter') document.getElementById('scan-add-folder-btn').click();
-    };
-
-    /* ─────────────────────────── SCAN EXECUTION ─────────────────────────── */
-    document.getElementById('scan-run-btn').onclick = runScan;
-
-    function runScan() {
-        const btn = document.getElementById('scan-run-btn');
-        const stats = document.getElementById('scan-stats');
-        const results = document.getElementById('scan-results');
-        btn.disabled = true;
-        btn.textContent = '⏳ Memindai...';
-        stats.textContent = '';
-        results.innerHTML = '<p class="sc-empty">Memindai...</p>';
-
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url: `${API_URL}/api/scan`,
-            onload: (res) => {
-                btn.disabled = false;
-                btn.textContent = '🔍 Scan Sekarang';
-                const files = JSON.parse(res.responseText);
-                stats.textContent = `${files.length} video ditemukan`;
-                renderScanResults(files);
-            },
-            onerror: () => {
-                btn.disabled = false;
-                btn.textContent = '🔍 Scan Sekarang';
-                results.innerHTML = '<p class="sc-empty" style="color:#f55">Gagal terhubung ke server.</p>';
-            }
-        });
-    }
-
-    function renderScanResults(files) {
-        const results = document.getElementById('scan-results');
-        results.className = libraryView;
-        if (!files.length) {
-            results.innerHTML = '<p class="sc-empty">Tidak ada file video ditemukan di folder yang dipilih.</p>';
-            return;
-        }
-        results.innerHTML = '';
-        files.forEach(file => {
-            const card = document.createElement('div');
-            card.className = 'scan-card';
-            const folderName = file.folderPath.split(/[\\/]/).pop() || file.folderPath;
-            const ext = file.fileName.split('.').pop().toUpperCase();
-            const inLib = file.inHistory;
-            const streamUrl = `${API_URL}/api/stream/${file.streamKey}`;
-
-            card.innerHTML = `
-                <div class="sc-thumb">🎬</div>
-                <div class="sc-body">
-                    <div class="sc-title" title="${file.fileName}">${file.title}</div>
-                    <div class="sc-meta">
-                        <span class="sc-tag">${ext}</span>
-                        ${file.filesize ? `<span class="sc-tag">💾 ${file.filesize}</span>` : ''}
-                        <span class="sc-tag folder" title="${file.folderPath}">📂 ${folderName}</span>
-                    </div>
-                    <div class="sc-actions">
-                        <button class="sc-play-btn">▶ Play</button>
-                        <button class="sc-add-btn ${inLib ? 'sc-in-library' : ''}" data-file='${JSON.stringify(file)}'>
-                            ${inLib ? '✓ Di Library' : '+ Library'}
-                        </button>
-                    </div>
-                </div>
-            `;
-
-            card.querySelector('.sc-play-btn').onclick = () => {
-                const player = document.getElementById('v-player');
-                document.getElementById('p-title').textContent = file.title;
-                player.src = streamUrl;
-                player.play();
-                // Switch to left panel focus
-                modal.querySelector('.main-p').scrollIntoView({ behavior: 'smooth' });
-            };
-
-            const addBtn = card.querySelector('.sc-add-btn');
-            if (!inLib) {
-                addBtn.onclick = () => {
-                    GM_xmlhttpRequest({
-                        method: 'POST',
-                        url: `${API_URL}/api/history/add`,
-                        headers: { 'Content-Type': 'application/json' },
-                        data: JSON.stringify({
-                            title: file.title,
-                            quality: ext,
-                            thumbnail: '',
-                            fileName: file.fileName,
-                            filesize: file.filesize,
-                            folderPath: file.folderPath
-                        }),
-                        onload: () => {
-                            addBtn.className = 'sc-add-btn sc-in-library';
-                            addBtn.textContent = '✓ Di Library';
-                            lastHistoryCount = -1;
-                        }
-                    });
-                };
-            }
-
-            results.appendChild(card);
-        });
-    }
-
-    /* ─────────────────────────── SSE — PERSISTENT ACROSS NAVIGATION ─────────────────────────── */
-    // YouTube is a SPA; we connect SSE once at top-level and never disconnect.
-    // We store the EventSource on `unsafeWindow` so it survives page transitions.
-    const _win = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
-    if (!_win.__ytdlSSE) {
-        _win.__ytdlSSE = new EventSource(`${API_URL}/api/events`);
-        _win.__ytdlProgress = {};
-    }
-    const es = _win.__ytdlSSE;
-
-    es.onmessage = (e) => {
+    _w.__ytdlSSE.onmessage = (e) => {
         const data = JSON.parse(e.data);
-        _win.__ytdlProgress = data;
-
-        const activeCount = Object.keys(data).length;
-        fab.innerHTML = activeCount > 0
-            ? `⏳<span class="fab-badge">${activeCount}</span>`
-            : '📂';
-        fab.style.background = activeCount > 0 ? '#ffaa00' : '#ff0000';
-
-        renderActiveDownloads(data);
+        _w.__ytdlProg = data;
+        const n = Object.keys(data).length;
+        fab.innerHTML = n > 0 ? `⏳<span class="badge">${n}</span>` : '📂';
+        fab.style.background = n > 0 ? '#fa0' : '#e00';
+        renderDlPanel(data);
+        // Update toggle bar badge
+        const playing = player.src && !player.paused ? document.getElementById('p-title')?.textContent : '';
+        updateToggleBar(playing || '', n);
     };
 
-    /* ─────────────────────────── RENDER ACTIVE DOWNLOADS ─────────────────────────── */
-    function cancelDownload(url) {
-        GM_xmlhttpRequest({
-            method: 'POST',
-            url: `${API_URL}/api/cancel`,
-            headers: { 'Content-Type': 'application/json' },
-            data: JSON.stringify({ url }),
-            onload: () => { lastHistoryCount = -1; }
-        });
-    }
-
-    function renderActiveDownloads(data) {
+    /* ══════════════════════════════════════════════════════
+       ACTIVE DOWNLOAD PANEL
+    ══════════════════════════════════════════════════════ */
+    function renderDlPanel(data) {
         const panel = document.getElementById('dl-panel');
         if (!panel) return;
-
         const entries = Object.entries(data);
+
         if (entries.length === 0) {
-            panel.innerHTML = '<p class="dl-empty" id="dl-empty">Tidak ada unduhan aktif</p>';
+            panel.innerHTML = '<p class="dl-empty">Tidak ada unduhan aktif</p>';
             return;
         }
 
         entries.forEach(([url, info]) => {
-            let card = panel.querySelector(`[data-dl-url="${CSS.escape(url)}"]`);
+            let card = panel.querySelector(`[data-url="${CSS.escape(url)}"]`);
             if (!card) {
+                // Remove empty message
+                const emp = panel.querySelector('.dl-empty');
+                if (emp) emp.remove();
                 card = document.createElement('div');
                 card.className = 'dl-card';
-                card.setAttribute('data-dl-url', url);
-                // Clear empty message if present
-                const emptyMsg = panel.querySelector('.dl-empty');
-                if (emptyMsg) emptyMsg.remove();
+                card.setAttribute('data-url', url);
                 panel.appendChild(card);
             }
 
-            const vp = info.videoPercent || 0;
-            const ap = info.audioPercent || 0;
+            const vp    = info.videoPercent || 0;
+            const ap    = info.audioPercent || 0;
             const phase = info.phase || 'video';
-            const speed = info.speed ? `⚡ ${info.speed}` : '';
-            const eta = info.eta ? `⏱ ${info.eta}` : '';
-            const title = (info.title || url).substring(0, 45);
+            const spd   = info.speed ? `⚡ ${info.speed}` : '';
+            const eta   = info.eta   ? `⏱ ${info.eta}`   : '';
+            const title = (info.title || url).substring(0, 50);
+            const qual  = info.quality || '';
+            const fsz   = info.filesize ? `💾 ${info.filesize}` : '';
             const thumb = info.thumbnail || '';
-            const quality = info.quality || '';
-            const filesize = info.filesize ? `💾 ${info.filesize}` : '';
 
-            const isMerging = phase === 'merging';
-            const isDone = phase === 'done';
-            const isCancelled = phase === 'cancelled';
+            const done      = phase === 'done';
+            const merging   = phase === 'merging';
+            const cancelled = phase === 'cancelled';
+            const active    = !done && !merging && !cancelled;
 
-            const phaseColor = phase === 'video' ? '#ff4444' : phase === 'audio' ? '#3ea6ff' : '#ffaa00';
-            const phaseLabel = phase === 'video' ? 'Mengunduh video...' :
-                               phase === 'audio' ? 'Mengunduh audio...' :
-                               phase === 'merging' ? 'Menggabungkan...' :
-                               phase === 'cancelled' ? 'Dibatalkan' : 'Selesai!';
+            const statusColor = { video:'#f44', audio:'#3ea6ff', merging:'#fa0', done:'#0c6', cancelled:'#f44' }[phase] || '#888';
+            const statusText  = { video:'Mengunduh video...', audio:'Mengunduh audio...', merging:'Menggabungkan...', done:'✅ Selesai', cancelled:'❌ Dibatalkan' }[phase] || phase;
 
             card.innerHTML = `
-                <div class="dl-card-header">
+                <div class="dl-hdr">
                     ${thumb ? `<img src="${thumb}" onerror="this.style.display='none'">` : ''}
-                    <div class="dl-card-title">${title}</div>
-                    ${quality ? `<span class="dl-quality-badge">${quality}</span>` : ''}
+                    <div class="dl-hdr-text">${title}</div>
+                    ${qual ? `<span class="dl-badge">${qual}</span>` : ''}
                 </div>
-                ${isCancelled ? `
-                    <div class="dl-cancelled-label">❌ Unduhan dibatalkan</div>
-                ` : isMerging ? `
-                    <div class="dl-phase-label"><span>🔀 Menggabungkan...</span><span class="dl-speed">${speed}</span></div>
-                    <div class="pbar-bg"><div class="pbar-fill pbar-merge" style="width:100%"></div></div>
-                ` : isDone ? `
-                    <div class="dl-phase-label"><span style="color:#00cc66">✅ Selesai</span><span>${filesize}</span></div>
-                    <div class="pbar-bg"><div class="pbar-fill pbar-video" style="width:100%"></div></div>
-                ` : `
-                    <div class="dl-phase-label">
-                        <span>🎬 Video <strong>${vp.toFixed(1)}%</strong></span>
-                        <span class="dl-speed">${speed}</span>
-                    </div>
-                    <div class="pbar-bg"><div class="pbar-fill pbar-video" style="width:${vp}%"></div></div>
-                    <div class="dl-phase-label">
-                        <span>🔊 Audio <strong>${ap.toFixed(1)}%</strong></span>
-                        <span class="dl-eta">${eta}</span>
-                    </div>
-                    <div class="pbar-bg"><div class="pbar-fill pbar-audio" style="width:${ap}%"></div></div>
-                `}
-                <div class="dl-summary">
-                    <span>${filesize}</span>
-                    <span style="color:${isCancelled ? '#ff4444' : isDone ? '#00cc66' : phaseColor}">${phaseLabel}</span>
+                ${cancelled ? `<p style="text-align:center;color:#f44;font-size:11px;margin:4px 0">❌ Unduhan dibatalkan</p>` :
+                  merging   ? `<div class="dl-row"><span>🔀 Menggabungkan...</span><span class="spd">${spd}</span></div>
+                               <div class="pbar"><div class="pbar-fill pbar-m" style="width:100%"></div></div>` :
+                  done      ? `<div class="dl-row"><span style="color:#0c6">✅ Selesai</span><span>${fsz}</span></div>
+                               <div class="pbar"><div class="pbar-fill pbar-v" style="width:100%"></div></div>` :
+                  `<div class="dl-row"><span>🎬 Video <b>${vp.toFixed(1)}%</b></span><span class="spd">${spd}</span></div>
+                   <div class="pbar"><div class="pbar-fill pbar-v" style="width:${vp}%"></div></div>
+                   <div class="dl-row"><span>🔊 Audio <b>${ap.toFixed(1)}%</b></span><span class="eta">${eta}</span></div>
+                   <div class="pbar"><div class="pbar-fill pbar-a" style="width:${ap}%"></div></div>`}
+                <div class="dl-foot">
+                    <span class="dl-status" style="color:${statusColor}">${active ? statusText : ''}</span>
+                    <span>${done || cancelled ? fsz : ''}</span>
+                    ${active ? `<button class="dl-cancel" data-url="${url}">✕ Batalkan</button>` : ''}
                 </div>
-                ${(!isDone && !isCancelled) ? `<button class="dl-cancel-btn" data-cancel-url="${url}">✕ Batalkan</button>` : ''}
             `;
 
-            // Attach cancel listener (avoid innerHTML event binding issues)
-            const cancelBtn = card.querySelector('.dl-cancel-btn');
+            const cancelBtn = card.querySelector('.dl-cancel');
             if (cancelBtn) {
-                cancelBtn.onclick = (e) => {
-                    e.stopPropagation();
-                    if (confirm(`Batalkan unduhan "${title}"?`)) {
-                        cancelBtn.disabled = true;
-                        cancelBtn.textContent = 'Membatalkan...';
-                        cancelDownload(url);
-                    }
+                cancelBtn.onclick = function() {
+                    if (!confirm(`Batalkan unduhan "${title}"?`)) return;
+                    this.disabled = true;
+                    this.textContent = 'Membatalkan...';
+                    GM_xmlhttpRequest({
+                        method: 'POST', url: `${API}/api/cancel`,
+                        headers: {'Content-Type':'application/json'},
+                        data: JSON.stringify({ url }),
+                        onload: () => { lastHistoryLen = -1; }
+                    });
                 };
             }
         });
 
-        // Remove cards for downloads that disappeared from server state
-        panel.querySelectorAll('.dl-card').forEach(card => {
-            const u = card.getAttribute('data-dl-url');
-            if (!data[u]) card.remove();
+        // Remove cards for downloads no longer in data
+        panel.querySelectorAll('.dl-card').forEach(c => {
+            if (!data[c.getAttribute('data-url')]) c.remove();
         });
 
-        if (panel.children.length === 0) {
-            panel.innerHTML = '<p class="dl-empty" id="dl-empty">Tidak ada unduhan aktif</p>';
+        if (!panel.querySelector('.dl-card')) {
+            panel.innerHTML = '<p class="dl-empty">Tidak ada unduhan aktif</p>';
         }
     }
 
-    /* ─────────────────────────── HISTORY ─────────────────────────── */
-    function loadHistory(force = false) {
+    /* ══════════════════════════════════════════════════════
+       STREAM KEY — encode full path as base64url (same as server)
+    ══════════════════════════════════════════════════════ */
+    function pathToStreamKey(fullPath) {
+        // TextEncoder → Uint8Array → base64 → base64url
+        const bytes = new TextEncoder().encode(fullPath);
+        let binary = '';
+        bytes.forEach(b => binary += String.fromCharCode(b));
+        return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+
+    function playFile(fileName, folderPath, title) {
+        document.getElementById('p-title').textContent = title || fileName;
+        if (folderPath) {
+            const fullPath = folderPath.replace(/\/$/, '') + '/' + fileName;
+            player.src = `${API}/api/stream/${pathToStreamKey(fullPath)}`;
+        } else {
+            player.src = `${API}/files/${encodeURIComponent(fileName)}`;
+        }
+        player.play();
+        // Auto-show player when something starts playing
+        if (!playerVisible) {
+            playerVisible = true;
+            localStorage.setItem('ytdl_player', 'visible');
+            applyPlayerVisibility();
+        }
+        updateToggleBar(title || fileName, Object.keys(_w.__ytdlProg || {}).length);
+    }
+
+    /* ══════════════════════════════════════════════════════
+       HISTORY
+    ══════════════════════════════════════════════════════ */
+    function loadHistory(force) {
         GM_xmlhttpRequest({
-            method: 'GET',
-            url: `${API_URL}/api/history`,
+            method: 'GET', url: `${API}/api/history`,
             onload: (res) => {
-                const history = JSON.parse(res.responseText);
-                if (!force && history.length === lastHistoryCount) return;
-                lastHistoryCount = history.length;
-                renderHistory(history);
+                const hist = JSON.parse(res.responseText);
+                if (!force && hist.length === lastHistoryLen) return;
+                lastHistoryLen = hist.length;
+                renderHistory(hist);
             }
         });
     }
 
-    function renderHistory(history) {
+    function renderHistory(hist) {
         const list = document.getElementById('h-list');
         list.className = libraryView;
-        if (!history.length) {
-            list.innerHTML = '<p style="text-align:center;color:#333;margin-top:20px;">Belum ada riwayat.</p>';
+        if (!hist.length) {
+            list.innerHTML = '<p style="text-align:center;color:#333;margin-top:20px">Belum ada riwayat.</p>';
             return;
         }
         list.innerHTML = '';
-        [...history].reverse().forEach(item => {
+        [...hist].reverse().forEach(item => {
+            const folderName = item.folderPath ? item.folderPath.split(/[\\/]/).pop() : '';
             const card = document.createElement('div');
             card.className = 'v-card';
             card.innerHTML = `
-                <img src="${item.thumbnail}" onerror="this.style.display='none'">
-                <div class="card-body">
-                    <div class="card-title">${item.title}</div>
+                <div class="thumb-wrap">
+                    ${item.thumbnail ? `<img src="${item.thumbnail}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">` : ''}
+                    <div class="no-thumb" style="${item.thumbnail ? 'display:none' : ''}">🎬</div>
+                </div>
+                <span class="thumb-quality">${item.quality}</span>
+                <button class="del-b" title="Hapus">🗑</button>
+                <div class="cb">
+                    <div class="card-title" title="${item.title}">${item.title}</div>
                     <div class="card-tags">
-                        <span class="tag-quality">${item.quality}</span>
-                        ${item.filesize ? `<span class="tag-size">💾 ${item.filesize}</span>` : ''}
+                        ${item.filesize ? `<span class="tag tag-s">💾 ${item.filesize}</span>` : ''}
+                        ${folderName ? `<span class="tag tag-f" title="${item.folderPath}">📂 ${folderName}</span>` : ''}
                     </div>
-                    <div class="card-actions">
-                        <button class="play-b" data-file="${item.fileName}" data-title="${item.title}" data-folderpath="${item.folderPath || ''}">▶ Play</button>
+                    <div class="card-acts">
+                        <button class="play-b">▶ Play</button>
                     </div>
                 </div>
-                <button class="del-b" data-file="${item.fileName}">🗑</button>
             `;
-
-            card.querySelector('.play-b').onclick = function () {
-                const player = document.getElementById('v-player');
-                document.getElementById('p-title').textContent = this.dataset.title;
-                const fp = this.dataset.folderpath;
-                const fn = this.dataset.file;
-                if (fp) {
-                    // File from a scanned folder — use stream endpoint
-                    const fullPath = fp.replace(/\/$/, '') + '/' + fn;
-                    const key = btoa(encodeURIComponent(fullPath).replace(/%([0-9A-F]{2})/g,
-                        (_, p1) => String.fromCharCode('0x' + p1)))
-                        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-                    player.src = `${API_URL}/api/stream/${key}`;
-                } else {
-                    player.src = `${API_URL}/files/${fn}`;
-                }
-                player.play();
-            };
-            card.querySelector('.del-b').onclick = function () {
+            card.querySelector('.play-b').onclick = () => playFile(item.fileName, item.folderPath || null, item.title);
+            card.querySelector('.del-b').onclick = () => {
                 if (!confirm('Hapus file ini secara permanen?')) return;
                 GM_xmlhttpRequest({
-                    method: 'DELETE',
-                    url: `${API_URL}/api/history`,
-                    headers: { 'Content-Type': 'application/json' },
-                    data: JSON.stringify({ fileName: this.dataset.file }),
-                    onload: () => { lastHistoryCount = -1; loadHistory(true); }
+                    method: 'DELETE', url: `${API}/api/history`,
+                    headers: {'Content-Type':'application/json'},
+                    data: JSON.stringify({ fileName: item.fileName, folderPath: item.folderPath || null }),
+                    onload: () => { lastHistoryLen = -1; loadHistory(true); }
                 });
             };
             list.appendChild(card);
         });
     }
 
-    /* ─────────────────────────── QUALITY POPUP HELPER ─────────────────────────── */
+    /* ══════════════════════════════════════════════════════
+       QUALITY POPUP
+    ══════════════════════════════════════════════════════ */
     function openQualityPopup(videoUrl, titleHint) {
-        document.getElementById('q-popup-title').textContent = titleHint || 'Menganalisis...';
-        document.getElementById('q-mini-list').innerHTML = '<span style="color:#666;font-size:13px;">Menganalisis format...</span>';
-        miniPopup.classList.add('active');
+        document.getElementById('popup-title').textContent = titleHint || '';
+        document.getElementById('q-list').innerHTML = '<span style="color:#555;font-size:13px">Menganalisis...</span>';
+        popup.classList.add('show');
 
         GM_xmlhttpRequest({
             method: 'GET',
-            url: `${API_URL}/api/info?url=${encodeURIComponent(videoUrl)}`,
+            url: `${API}/api/info?url=${encodeURIComponent(videoUrl)}`,
             onload: (res) => {
-                const data = JSON.parse(res.responseText);
-                document.getElementById('q-popup-title').textContent = data.title?.substring(0, 50) || '';
-                const cont = document.getElementById('q-mini-list');
+                let data;
+                try { data = JSON.parse(res.responseText); } catch(_) {
+                    document.getElementById('q-list').innerHTML = '<span style="color:#f55">Gagal parsing response</span>';
+                    return;
+                }
+                if (data.error) {
+                    document.getElementById('q-list').innerHTML = `<span style="color:#f55">${data.error}</span>`;
+                    return;
+                }
+                document.getElementById('popup-title').textContent = (data.title || '').substring(0, 55);
+                const cont = document.getElementById('q-list');
                 cont.innerHTML = '';
                 if (!data.formats || !data.formats.length) {
-                    cont.innerHTML = '<span style="color:#f55">Gagal memuat format.</span>';
+                    cont.innerHTML = '<span style="color:#f55">Tidak ada format tersedia</span>';
                     return;
                 }
                 data.formats.forEach(f => {
                     const btn = document.createElement('button');
-                    btn.className = 'q-mini-btn';
-                    btn.innerHTML = `${f.quality}${f.filesize ? `<span class="q-size">~${f.filesize}</span>` : ''}`;
+                    btn.className = 'q-btn';
+                    btn.innerHTML = `${f.quality}${f.filesize ? `<span class="q-sz">~${f.filesize}</span>` : ''}`;
                     btn.onclick = () => {
                         GM_xmlhttpRequest({
-                            method: 'POST',
-                            url: `${API_URL}/api/download`,
-                            headers: { 'Content-Type': 'application/json' },
-                            data: JSON.stringify({
-                                url: videoUrl,
-                                format_id: f.format_id,
-                                title: data.title,
-                                quality: f.quality,
-                                thumbnail: data.thumbnail
-                            })
+                            method: 'POST', url: `${API}/api/download`,
+                            headers: {'Content-Type':'application/json'},
+                            data: JSON.stringify({ url: videoUrl, format_id: f.format_id, title: data.title, quality: f.quality, thumbnail: data.thumbnail })
                         });
-                        miniPopup.classList.remove('active');
+                        popup.classList.remove('show');
                     };
                     cont.appendChild(btn);
                 });
             },
             onerror: () => {
-                document.getElementById('q-mini-list').innerHTML = '<span style="color:#f55">Koneksi ke server gagal.</span>';
+                document.getElementById('q-list').innerHTML = '<span style="color:#f55">Tidak dapat terhubung ke server</span>';
             }
         });
     }
 
-    /* ─────────────────────────── WATCH PAGE BUTTON ─────────────────────────── */
+    /* ══════════════════════════════════════════════════════
+       WATCH PAGE DOWNLOAD BUTTON
+    ══════════════════════════════════════════════════════ */
     function injectWatchBtn() {
         if (!location.pathname.startsWith('/watch')) return;
-        if (document.querySelector('.ytdl-trigger-btn')) return;
-        const target = document.querySelector('#top-level-buttons-computed') ||
-                       document.querySelector('ytd-watch-metadata #actions');
+        if (document.querySelector('.ytdl-dl-btn')) return;
+        const target = document.querySelector('#top-level-buttons-computed') || document.querySelector('ytd-watch-metadata #actions');
         if (!target) return;
         const btn = document.createElement('button');
-        btn.className = 'ytdl-trigger-btn';
+        btn.className = 'ytdl-dl-btn';
         btn.textContent = '⬇ DOWNLOAD';
         btn.onclick = () => openQualityPopup(location.href, document.title);
         target.appendChild(btn);
     }
 
-    /* ─────────────────────────── HOMEPAGE 3-DOT MENU INJECTION ─────────────────────────── */
-    let ctxMenu = null;
-    function removeCtxMenu() {
-        if (ctxMenu) { ctxMenu.remove(); ctxMenu = null; }
-    }
+    /* ══════════════════════════════════════════════════════
+       HOMEPAGE 3-DOT MENU INJECTION
+    ══════════════════════════════════════════════════════ */
+    new MutationObserver(() => {
+        document.querySelectorAll('ytd-menu-popup-renderer:not([ytdl-ok])').forEach(menu => {
+            menu.setAttribute('ytdl-ok', '1');
+            const list = menu.querySelector('tp-yt-paper-listbox, ytd-menu-service-item-renderer');
+            if (!list) return;
 
-    function getVideoUrlFromMenu(menuBtn) {
-        // Walk up to find the video renderer
-        const renderers = [
-            'ytd-rich-item-renderer',
-            'ytd-video-renderer',
-            'ytd-compact-video-renderer',
-            'ytd-grid-video-renderer',
-            'ytd-playlist-video-renderer'
-        ];
-        let el = menuBtn;
-        for (let i = 0; i < 12; i++) {
-            el = el.parentElement;
-            if (!el) break;
-            const tag = el.tagName?.toLowerCase();
-            if (renderers.includes(tag)) {
-                const anchor = el.querySelector('a#video-title, a#thumbnail, a.yt-simple-endpoint[href*="/watch"]');
-                if (anchor) {
-                    const href = anchor.getAttribute('href');
-                    return href ? 'https://www.youtube.com' + href : null;
-                }
-            }
-        }
-        return null;
-    }
+            const item = document.createElement('ytd-menu-service-item-renderer');
+            item.style.cursor = 'pointer';
+            item.innerHTML = `<tp-yt-paper-item role="option" style="display:flex;align-items:center;gap:12px;padding:0 16px;min-height:36px;cursor:pointer;font-family:Roboto,sans-serif">
+                <span style="font-size:18px">⬇</span>
+                <span style="font-size:14px">Download</span>
+            </tp-yt-paper-item>`;
 
-    function getVideoTitleFromMenu(menuBtn) {
-        let el = menuBtn;
-        for (let i = 0; i < 12; i++) {
-            el = el.parentElement;
-            if (!el) break;
-            const title = el.querySelector('#video-title, .ytd-video-meta-block #video-title, yt-formatted-string#video-title');
-            if (title) return title.textContent?.trim() || '';
-        }
-        return '';
-    }
-
-    // Intercept clicks on 3-dot menu buttons across the page
-    document.addEventListener('click', (e) => {
-        // If clicking away from our ctx menu, close it
-        if (ctxMenu && !ctxMenu.contains(e.target)) {
-            removeCtxMenu();
-        }
-    }, true);
-
-    // Watch for 3-dot (⋮) popup menus that YT opens
-    const menuObserver = new MutationObserver(() => {
-        // YT's native context popup for video items
-        const ytMenus = document.querySelectorAll('ytd-menu-popup-renderer:not([ytdl-injected])');
-        ytMenus.forEach(menu => {
-            menu.setAttribute('ytdl-injected', '1');
-
-            // Find the trigger button that opened this menu
-            // We'll add our item into the YT menu renderer directly
-            const items = menu.querySelector('ytd-menu-service-item-renderer, tp-yt-paper-listbox');
-            if (!items) return;
-
-            // Find video URL via the menu button's context
-            // YT stores the renderer's data; easier to parse URL from nearby anchor
-            // We'll inject a custom item at top
-            const dlItem = document.createElement('ytd-menu-service-item-renderer');
-            dlItem.style.cssText = 'cursor:pointer;';
-            dlItem.innerHTML = `
-                <tp-yt-paper-item role="option" style="display:flex;align-items:center;gap:12px;padding:0 16px;min-height:36px;cursor:pointer;">
-                    <yt-icon style="width:24px;height:24px;display:flex;align-items:center;justify-content:center;">⬇</yt-icon>
-                    <yt-formatted-string style="font-size:14px;font-family:Roboto,sans-serif;">Download</yt-formatted-string>
-                </tp-yt-paper-item>
-            `;
-            dlItem.onclick = (ev) => {
-                ev.stopPropagation();
-                // Find the video url from what's currently in the popup
-                // YT's popup is associated with a renderer via the active button
-                const activeBtn = document.querySelector('ytd-menu-renderer button.yt-icon-button:focus, ytd-menu-renderer button[aria-expanded="true"]');
+            item.onclick = (e) => {
+                e.stopPropagation();
+                // Find associated video URL by walking up from the menu's anchor
                 let videoUrl = null;
-                let videoTitle = '';
-                if (activeBtn) {
-                    videoUrl = getVideoUrlFromMenu(activeBtn);
-                    videoTitle = getVideoTitleFromMenu(activeBtn);
+                let titleHint = '';
+                const renderers = ['ytd-rich-item-renderer','ytd-video-renderer','ytd-compact-video-renderer','ytd-grid-video-renderer'];
+                let el = menu;
+                for (let i = 0; i < 15 && el; i++, el = el.parentElement) {
+                    if (renderers.includes(el.tagName?.toLowerCase())) {
+                        const a = el.querySelector('a[href*="/watch"]');
+                        if (a) { videoUrl = 'https://www.youtube.com' + a.getAttribute('href'); }
+                        const t = el.querySelector('#video-title, yt-formatted-string#video-title');
+                        if (t) titleHint = t.textContent?.trim() || '';
+                        break;
+                    }
                 }
-                // fallback: try any open renderer
-                if (!videoUrl) {
-                    const anchor = menu.closest('ytd-rich-item-renderer, ytd-video-renderer')?.querySelector('a[href*="/watch"]');
-                    if (anchor) videoUrl = 'https://www.youtube.com' + anchor.getAttribute('href');
-                }
-                if (videoUrl) {
-                    // Close YT's menu
-                    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-                    setTimeout(() => openQualityPopup(videoUrl, videoTitle), 100);
-                }
+                document.dispatchEvent(new KeyboardEvent('keydown', { key:'Escape', bubbles:true }));
+                if (videoUrl) setTimeout(() => openQualityPopup(videoUrl, titleHint), 150);
             };
 
-            const firstChild = items.firstChild;
-            items.insertBefore(dlItem, firstChild);
+            list.parentElement ? list.parentElement.insertBefore(item, list) : menu.insertBefore(item, menu.firstChild);
         });
-    });
-    menuObserver.observe(document.body, { childList: true, subtree: true });
+    }).observe(document.body, { childList:true, subtree:true });
 
-    /* ─────────────────────────── CLOSE HANDLERS ─────────────────────────── */
-    document.getElementById('close-mini').onclick = () => miniPopup.classList.remove('active');
-    document.getElementById('close-ytdl').onclick = () => {
-        modal.classList.remove('active');
-        document.getElementById('v-player').pause();
-    };
+    /* ══════════════════════════════════════════════════════
+       SCAN FOLDER
+    ══════════════════════════════════════════════════════ */
+    let scanFolders = [];
+    let mainFolder  = '';
 
-    /* ─────────────────────────── AUTO-REFRESH HISTORY ─────────────────────────── */
-    // Reload history when a download finishes
-    let prevProgressKeys = '';
-    setInterval(() => {
-        const keys = Object.keys(_win.__ytdlProgress || {}).join(',');
-        if (keys !== prevProgressKeys) {
-            prevProgressKeys = keys;
-            // If a key disappeared (download finished), refresh history
-            if (keys.length < prevProgressKeys.length || keys === '') {
-                loadHistory(true);
+    function loadScanConfig() {
+        GM_xmlhttpRequest({
+            method: 'GET', url: `${API}/api/config`,
+            onload: (res) => {
+                const cfg = JSON.parse(res.responseText);
+                mainFolder  = cfg.downloadFolder;
+                scanFolders = cfg.scanFolders || [];
+                renderFolderList();
             }
+        });
+    }
+
+    function saveScanFolders() {
+        GM_xmlhttpRequest({
+            method: 'POST', url: `${API}/api/config`,
+            headers: {'Content-Type':'application/json'},
+            data: JSON.stringify({ scanFolders })
+        });
+    }
+
+    function renderFolderList() {
+        const el = document.getElementById('folder-list');
+        el.innerHTML = '';
+        // Main folder
+        el.insertAdjacentHTML('beforeend', `
+            <div class="folder-item">
+                <span>📥</span>
+                <span class="fp" title="${mainFolder}">${mainFolder}</span>
+                <span class="fbadge">Utama</span>
+            </div>`);
+        // Extra folders
+        scanFolders.forEach((f, i) => {
+            const div = document.createElement('div');
+            div.className = 'folder-item';
+            div.innerHTML = `<span>📂</span><span class="fp" title="${f}">${f}</span><button class="frem">✕</button>`;
+            div.querySelector('.frem').onclick = () => { scanFolders.splice(i, 1); saveScanFolders(); renderFolderList(); };
+            el.appendChild(div);
+        });
+    }
+
+    document.getElementById('folder-add-btn').onclick = () => {
+        const inp = document.getElementById('folder-input');
+        const v = inp.value.trim();
+        if (!v || v === mainFolder || scanFolders.includes(v)) { inp.value = ''; return; }
+        scanFolders.push(v);
+        saveScanFolders();
+        renderFolderList();
+        inp.value = '';
+    };
+    document.getElementById('folder-input').onkeydown = e => { if (e.key === 'Enter') document.getElementById('folder-add-btn').click(); };
+
+    document.getElementById('scan-btn').onclick = runScan;
+
+    function runScan() {
+        const btn   = document.getElementById('scan-btn');
+        const stats = document.getElementById('scan-stats');
+        const list  = document.getElementById('scan-list');
+        btn.disabled = true;
+        btn.textContent = '⏳ Memindai...';
+        stats.textContent = '';
+        list.innerHTML = '<p class="sc-empty">Memindai...</p>';
+
+        GM_xmlhttpRequest({
+            method: 'GET', url: `${API}/api/scan`,
+            onload: (res) => {
+                btn.disabled = false;
+                btn.textContent = '🔍 Scan Sekarang';
+                let files;
+                try { files = JSON.parse(res.responseText); } catch(_) {
+                    list.innerHTML = '<p class="sc-empty" style="color:#f55">Response tidak valid</p>'; return;
+                }
+                stats.textContent = `${files.length} video ditemukan`;
+                renderScanList(files);
+            },
+            onerror: () => {
+                btn.disabled = false;
+                btn.textContent = '🔍 Scan Sekarang';
+                list.innerHTML = '<p class="sc-empty" style="color:#f55">Gagal terhubung ke server</p>';
+            }
+        });
+    }
+
+    function renderScanList(files) {
+        const list = document.getElementById('scan-list');
+        list.className = libraryView;
+        if (!files.length) {
+            list.innerHTML = '<p class="sc-empty">Tidak ada video ditemukan.</p>';
+            return;
         }
-        if (modal.classList.contains('active')) {
-            loadHistory();
+        list.innerHTML = '';
+        files.forEach(f => {
+            const card = document.createElement('div');
+            card.className = 'sc-card';
+            const folder = f.folderPath.split(/[\\/]/).pop() || f.folderPath;
+            const ext    = f.fileName.split('.').pop().toUpperCase();
+            let inLib    = f.inHistory;
+
+            card.innerHTML = `
+                <div class="sc-thumb">🎬</div>
+                <div class="sc-body">
+                    <div class="sc-title" title="${f.fileName}">${f.title}</div>
+                    <div class="sc-meta">
+                        <span class="tag tag-q" style="background:#333;color:#aaa">${ext}</span>
+                        ${f.filesize ? `<span class="tag tag-s">💾 ${f.filesize}</span>` : ''}
+                        <span class="tag tag-f" title="${f.folderPath}">📂 ${folder}</span>
+                    </div>
+                    <div class="sc-acts">
+                        <button class="sc-play">▶ Play</button>
+                        <button class="sc-add ${inLib ? 'in-lib' : ''}">${inLib ? '✓ Di Library' : '+ Library'}</button>
+                    </div>
+                </div>
+            `;
+
+            card.querySelector('.sc-play').onclick = () => {
+                // Use the streamKey provided by server (already base64url encoded correctly)
+                document.getElementById('p-title').textContent = f.title;
+                player.src = `${API}/api/stream/${f.streamKey}`;
+                player.play();
+            };
+
+            const addBtn = card.querySelector('.sc-add');
+            if (!inLib) {
+                addBtn.onclick = () => {
+                    GM_xmlhttpRequest({
+                        method: 'POST', url: `${API}/api/history/add`,
+                        headers: {'Content-Type':'application/json'},
+                        data: JSON.stringify({ title: f.title, quality: ext, thumbnail: '', fileName: f.fileName, filesize: f.filesize, folderPath: f.folderPath }),
+                        onload: () => {
+                            addBtn.className = 'sc-add in-lib';
+                            addBtn.textContent = '✓ Di Library';
+                            inLib = true;
+                            lastHistoryLen = -1;
+                        }
+                    });
+                };
+            }
+
+            list.appendChild(card);
+        });
+    }
+
+    /* ══════════════════════════════════════════════════════
+       AUTO REFRESH
+    ══════════════════════════════════════════════════════ */
+    let prevKeys = '';
+    setInterval(() => {
+        const keys = Object.keys(_w.__ytdlProg || {}).join(',');
+        // Refresh history when a download finishes (key disappears)
+        if (keys !== prevKeys && keys.length < prevKeys.length) {
+            loadHistory(true);
         }
+        prevKeys = keys;
+        if (modal.classList.contains('show')) loadHistory();
+        // Keep download panel updated even when modal is closed
+        if (_w.__ytdlProg && Object.keys(_w.__ytdlProg).length > 0) renderDlPanel(_w.__ytdlProg);
     }, 2000);
 
-    /* ─────────────────────────── SPA NAV SUPPORT ─────────────────────────── */
-    // Re-inject watch button after YouTube SPA navigation
+    // Re-inject watch button after SPA navigation
     setInterval(injectWatchBtn, 2000);
-
-    // Restore active downloads UI on page change
-    setInterval(() => {
-        if (_win.__ytdlProgress && Object.keys(_win.__ytdlProgress).length > 0) {
-            renderActiveDownloads(_win.__ytdlProgress);
-        }
-    }, 1000);
 
 })();
