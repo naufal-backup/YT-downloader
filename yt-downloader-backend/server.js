@@ -18,6 +18,23 @@ const ROOT         = __dirname;
 const CONFIG_PATH  = path.join(ROOT, 'ytdl-config.json');
 const LIBRARY_PATH = path.join(ROOT, 'ytdl-library.json');
 
+// ─── YT-DLP PATH AUTO-DETECT ─────────────────────────────────────────────────
+function findYtDlp() {
+    if (process.env.YTDLP_PATH && fs.existsSync(process.env.YTDLP_PATH)) return process.env.YTDLP_PATH;
+    const candidates = [
+        path.join(os.homedir(), '.local', 'bin', 'yt-dlp'),
+        '/usr/local/bin/yt-dlp',
+        '/usr/bin/yt-dlp',
+        '/opt/homebrew/bin/yt-dlp',   // macOS Homebrew
+        'yt-dlp',                      // fallback ke PATH
+    ];
+    const found = candidates.find(p => { try { return p === 'yt-dlp' || fs.existsSync(p); } catch(_) { return false; } });
+    if (!found) throw new Error('yt-dlp tidak ditemukan. Install dengan: pip install yt-dlp');
+    return found;
+}
+const YTDLP = findYtDlp();
+console.log(`🔧 yt-dlp path: ${YTDLP}`);
+
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 function formatBytes(bytes) {
     if (!bytes || bytes === 0) return null;
@@ -257,8 +274,8 @@ app.get('/api/stream/:key', (req, res) => {
 app.get('/api/info', (req, res) => {
     const url = req.query.url;
     if (!url) return res.status(400).json({ error: 'URL diperlukan' });
-    exec(`yt-dlp --cookies-from-browser firefox -J "${url}"`, { maxBuffer: 1024 * 1024 * 20 }, (error, stdout) => {
-        if (error) return res.status(500).json({ error: 'Gagal memuat info video' });
+    exec(`"${YTDLP}" --extractor-args "youtube:player_client=android_vr" -J "${url}"`, { maxBuffer: 1024 * 1024 * 20 }, (error, stdout, stderr) => {
+        if (error) return res.status(500).json({ error: 'Gagal memuat info video', detail: stderr });
         try {
             const info    = JSON.parse(stdout);
             const seen    = new Set();
@@ -306,9 +323,9 @@ app.post('/api/download', (req, res) => {
         phase: 'video', speed: null, eta: null, filesize: null
     };
 
-    const ytProcess = spawn('yt-dlp', [
-        '--cookies-from-browser', 'firefox',
-        '-f', `${format_id}+bestaudio/best`,
+    const ytProcess = spawn(YTDLP, [
+        '--extractor-args', 'youtube:player_client=android_vr',
+        '-f', `${format_id}+bestaudio[ext=m4a]/bestaudio/best`,
         '--merge-output-format', 'mp4',
         '--newline',
         '-o', outputPath,
