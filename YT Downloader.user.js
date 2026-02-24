@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTube Downloader
 // @namespace    http://tampermonkey.net/
-// @version      11.19
-// @description  yt-dlp + SSE + Hover + Share Catcher + Virtual Folders + Auto Playlist + Ultimate Clean
+// @version      11.21
+// @description  yt-dlp + SSE + Hover + Share Catcher + Virtual Folders + Auto Playlist + Ultimate Clean + Pause/Resume
 // @match        *://*.youtube.com/*
 // @noframes
 // @grant        GM_xmlhttpRequest
@@ -14,11 +14,12 @@
 
 // 1. Sistem Anti-Bentrok: Matikan paksa jika ada script versi lain yang mencoba jalan
 if (window.__ytdl_active_version) return;
-window.__ytdl_active_version = "11.19";
+window.__ytdl_active_version = "11.21";
 
 // 2. Bersihkan elemen lama dari DOM (jika reload tanpa refresh)
 document.querySelectorAll('#ytdl-fab-container, #ytdl-modal, #ytdl-popup, .ytdl-hover-dl').forEach(el => el.remove());
 
+// FIX: Gunakan http bukan https agar cocok dengan server Express biasa
 const API = 'http://localhost:8989';
 
 // GLOBAL FUNGSI: Mengecek apakah item adalah Shorts
@@ -151,12 +152,26 @@ ytd-rich-item-renderer:hover .ytdl-hover-dl, ytd-video-renderer:hover .ytdl-hove
 .pbar-a{background:linear-gradient(90deg,#48f,#3ea6ff)}
 .pbar-m{background:linear-gradient(90deg,#fc0,#fa0);animation:blink .7s infinite alternate}
 @keyframes blink{from{opacity:.6}to{opacity:1}}
-.dl-foot{display:flex;justify-content:space-between;align-items:center;margin-top:5px}
-.dl-status{font-size:10px}
-.dl-cancel{background:none;border:1px solid #522;color:#f44;border-radius:5px;padding:3px 10px;font-size:10px;cursor:pointer;transition:all .2s}
-.dl-cancel:hover{background:#e00;border-color:#e00;color:#fff}
-.dl-empty{color:#333;font-size:13px;text-align:center;margin-top:30px}
+.dl-foot{display:flex;justify-content:space-between;align-items:center;margin-top:5px;gap:4px}
+.dl-foot-btns{display:flex;gap:4px;align-items:center;flex-shrink:0}
+.dl-status{font-size:10px;flex:1}
 
+/* ── TOMBOL PAUSE ── */
+.dl-pause{background:none;border:1px solid #555;color:#fa0;border-radius:5px;padding:3px 10px;font-size:10px;cursor:pointer;transition:all .2s;white-space:nowrap}
+.dl-pause:hover{background:#fa0;border-color:#fa0;color:#000}
+.dl-pause.is-paused{color:#3ea6ff;border-color:#3ea6ff;}
+.dl-pause.is-paused:hover{background:#3ea6ff;border-color:#3ea6ff;color:#fff}
+.dl-pause:disabled{opacity:.4;cursor:not-allowed}
+
+/* ── TOMBOL CANCEL ── */
+.dl-cancel{background:none;border:1px solid #522;color:#f44;border-radius:5px;padding:3px 10px;font-size:10px;cursor:pointer;transition:all .2s;white-space:nowrap}
+.dl-cancel:hover{background:#e00;border-color:#e00;color:#fff}
+
+/* ── STATUS PAUSED ── */
+.dl-paused-label{font-size:10px;color:#fa0;font-style:italic;text-align:center;padding:4px 0;background:rgba(255,170,0,0.08);border-radius:5px;margin-bottom:4px}
+
+.close-ytdl{flex-shrink:0;margin-top:10px;background:#1a1a1a;color:#888;border:1px solid #333;padding:9px 36px;border-radius:20px;cursor:pointer;font-weight:700;align-self:center;transition:all .2s}
+.close-ytdl:hover{background:#333;color:#fff}
 #close-ytdl{flex-shrink:0;margin-top:10px;background:#1a1a1a;color:#888;border:1px solid #333;padding:9px 36px;border-radius:20px;cursor:pointer;font-weight:700;align-self:center;transition:all .2s}
 #close-ytdl:hover{background:#333;color:#fff}
 
@@ -189,8 +204,6 @@ ytd-rich-item-renderer:hover .ytdl-hover-dl, ytd-video-renderer:hover .ytdl-hove
 .folder-group-header .fg-count{background:#222;color:#555;font-size:9px;padding:2px 6px;border-radius:4px;flex-shrink:0}
 .folder-group-header .fg-toggle{font-size:10px;color:#444;transition:transform .2s;flex-shrink:0}
 .folder-group-header.collapsed .fg-toggle{transform:rotate(-90deg)}
-.folder-group-body{overflow:hidden;transition:all .2s}
-.folder-group-body.collapsed{display:none}
 .fg-del-btn { background:none; border:none; color:#f44; cursor:pointer; font-size:14px; margin-left:4px; padding:0 5px; border-radius:4px; transition:all 0.2s; }
 .fg-del-btn:hover { background:#f44; color:#fff; }
 
@@ -679,7 +692,7 @@ _w.__ytdlSSE.onmessage = (e) => {
 };
 
 /* ══════════════════════════════════════════════════════
-   ACTIVE DOWNLOAD PANEL
+   ACTIVE DOWNLOAD PANEL (dengan tombol Pause/Resume)
 ══════════════════════════════════════════════════════ */
 function renderDlPanel(data) {
     const panel = document.getElementById('dl-panel');
@@ -695,15 +708,16 @@ function renderDlPanel(data) {
             panel.appendChild(card);
         }
 
-        const vp    = info.videoPercent || 0;
-        const ap    = info.audioPercent || 0;
-        const phase = info.phase || 'video';
-        const spd   = info.speed ? `⚡ ${info.speed}` : '';
-        const eta   = info.eta   ? `⏱ ${info.eta}`   : '';
-        const title = (info.title || url).substring(0, 50);
-        const qual  = info.quality || '';
-        const fsz   = info.filesize ? `💾 ${info.filesize}` : '';
-        const thumb = info.thumbnail || '';
+        const vp       = info.videoPercent || 0;
+        const ap       = info.audioPercent || 0;
+        const phase    = info.phase || 'video';
+        const isPaused = !!info.paused;
+        const spd      = info.speed ? `⚡ ${info.speed}` : '';
+        const eta      = info.eta   ? `⏱ ${info.eta}`   : '';
+        const title    = (info.title || url).substring(0, 50);
+        const qual     = info.quality || '';
+        const fsz      = info.filesize ? `💾 ${info.filesize}` : '';
+        const thumb    = info.thumbnail || '';
 
         const done      = phase === 'done';
         const merging   = phase === 'merging';
@@ -711,7 +725,13 @@ function renderDlPanel(data) {
         const active    = !done && !merging && !cancelled;
 
         const statusColor = { video:'#f44', audio:'#3ea6ff', merging:'#fa0', done:'#0c6', cancelled:'#f44' }[phase] || '#888';
-        const statusText  = { video:'Mengunduh...', audio:'Mengunduh...', merging:'Menggabungkan...', done:'✅ Selesai', cancelled:'❌ Dibatalkan' }[phase] || phase;
+        const pausedStatusColor = '#fa0';
+        const statusText  = isPaused
+            ? '⏸ Dijeda'
+            : ({ video:'Mengunduh...', audio:'Mengunduh...', merging:'Menggabungkan...', done:'✅ Selesai', cancelled:'❌ Dibatalkan' }[phase] || phase);
+
+        // Progress bars - dim when paused
+        const pbarOpacity = isPaused ? 'opacity:0.4;' : '';
 
         card.innerHTML = `
             <div class="dl-hdr">
@@ -719,14 +739,24 @@ function renderDlPanel(data) {
                 <div class="dl-hdr-text">${title}</div>
                 ${qual ? `<span class="dl-badge">${qual}</span>` : ''}
             </div>
+            ${isPaused ? `<div class="dl-paused-label">⏸ Unduhan dijeda — klik Lanjutkan untuk melanjutkan</div>` : ''}
             ${cancelled ? `<p style="text-align:center;color:#f44;font-size:11px;margin:4px 0">❌ Unduhan dibatalkan</p>` :
-              merging   ? `<div class="dl-row"><span>🔀 Menggabungkan...</span><span class="spd">${spd}</span></div><div class="pbar"><div class="pbar-fill pbar-m" style="width:100%"></div></div>` :
+              merging   ? `<div class="dl-row"><span>🔀 Menggabungkan...</span><span class="spd">${spd}</span></div><div class="pbar" style="${pbarOpacity}"><div class="pbar-fill pbar-m" style="width:100%"></div></div>` :
               done      ? `<div class="dl-row"><span style="color:#0c6">✅ Selesai</span><span>${fsz}</span></div><div class="pbar"><div class="pbar-fill pbar-v" style="width:100%"></div></div>` :
-                          `<div class="dl-row"><span>🎬 Video <b>${vp.toFixed(1)}%</b></span><span class="spd">${spd}</span></div><div class="pbar"><div class="pbar-fill pbar-v" style="width:${vp}%"></div></div>
-                           <div class="dl-row"><span>🔊 Audio <b>${ap.toFixed(1)}%</b></span><span class="eta">${eta}</span></div><div class="pbar"><div class="pbar-fill pbar-a" style="width:${ap}%"></div></div>`}
-            <div class="dl-foot"><span class="dl-status" style="color:${statusColor}">${active ? statusText : ''}</span><span>${done || cancelled ? fsz : ''}</span>${active ? `<button class="dl-cancel" data-url="${url}">✕ Batalkan</button>` : ''}</div>
+                          `<div class="dl-row"><span>🎬 Video <b>${vp.toFixed(1)}%</b></span><span class="spd">${isPaused ? '' : spd}</span></div><div class="pbar" style="${pbarOpacity}"><div class="pbar-fill pbar-v" style="width:${vp}%"></div></div>
+                           <div class="dl-row"><span>🔊 Audio <b>${ap.toFixed(1)}%</b></span><span class="eta">${isPaused ? '' : eta}</span></div><div class="pbar" style="${pbarOpacity}"><div class="pbar-fill pbar-a" style="width:${ap}%"></div></div>`}
+            <div class="dl-foot">
+                <span class="dl-status" style="color:${isPaused && active ? pausedStatusColor : statusColor}">${active ? statusText : ''}</span>
+                <span>${done || cancelled ? fsz : ''}</span>
+                ${active ? `
+                <div class="dl-foot-btns">
+                    <button class="dl-pause ${isPaused ? 'is-paused' : ''}" data-url="${url}" data-paused="${isPaused ? 'true' : 'false'}">${isPaused ? '▶ Lanjutkan' : '⏸ Jeda'}</button>
+                    <button class="dl-cancel" data-url="${url}">✕ Batalkan</button>
+                </div>` : ''}
+            </div>
         `;
 
+        // Handler tombol CANCEL
         const cancelBtn = card.querySelector('.dl-cancel');
         if (cancelBtn) {
             cancelBtn.onclick = function() {
@@ -735,7 +765,46 @@ function renderDlPanel(data) {
                 GM_xmlhttpRequest({ method: 'POST', url: `${API}/api/cancel`, headers: {'Content-Type':'application/json'}, data: JSON.stringify({ url }), onload: () => { lastHistoryLen = -1; } });
             };
         }
+
+        // ── Handler tombol PAUSE / RESUME ──────────────────────
+        const pauseBtn = card.querySelector('.dl-pause');
+        if (pauseBtn) {
+            pauseBtn.onclick = function() {
+                const btnUrl = this.dataset.url;
+                this.disabled = true;
+                const wasPaused = this.dataset.paused === 'true';
+                this.textContent = wasPaused ? '⏳ Melanjutkan...' : '⏳ Menjeda...';
+
+                GM_xmlhttpRequest({
+                    method: 'POST',
+                    url: `${API}/api/pause`,
+                    headers: { 'Content-Type': 'application/json' },
+                    data: JSON.stringify({ url: btnUrl }),
+                    onload: (res) => {
+                        try {
+                            const r = JSON.parse(res.responseText);
+                            // Update local progress state so UI updates immediately
+                            if (_w.__ytdlProg && _w.__ytdlProg[btnUrl]) {
+                                _w.__ytdlProg[btnUrl].paused = r.paused;
+                            }
+                            renderDlPanel(_w.__ytdlProg || {});
+                        } catch(_) {
+                            // Fallback: just re-enable button
+                            this.disabled = false;
+                            this.textContent = wasPaused ? '▶ Lanjutkan' : '⏸ Jeda';
+                        }
+                    },
+                    onerror: () => {
+                        this.disabled = false;
+                        this.textContent = wasPaused ? '▶ Lanjutkan' : '⏸ Jeda';
+                        console.error('[YTDL] Gagal menghubungi /api/pause');
+                    }
+                });
+            };
+        }
+        // ────────────────────────────────────────────────────────
     });
+
     panel.querySelectorAll('.dl-card').forEach(c => { if (!data[c.getAttribute('data-url')]) c.remove(); });
 }
 
@@ -1005,7 +1074,6 @@ function renderHistory(hist) {
 function openQualityPopup(videoUrl, titleHint, isShorts) {
     document.getElementById('popup-title').textContent = titleHint || '';
 
-    // Tampilkan log pemuatan aman
     document.getElementById('q-list').innerHTML = `
         <span style="color:#555;font-size:13px">Menganalisis...<br>
         <span style="font-size:9px;color:#888;word-break:break-all;">URL: ${videoUrl}</span></span>`;
@@ -1087,6 +1155,9 @@ function openQualityPopup(videoUrl, titleHint, isShorts) {
 /* ══════════════════════════════════════════════════════
    SCAN FOLDER LOGIC
 ══════════════════════════════════════════════════════ */
+let mainFolder = '';
+let scanFolders = [];
+
 function loadScanConfig() {
     GM_xmlhttpRequest({
         method: 'GET', url: `${API}/api/config`,

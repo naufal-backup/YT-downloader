@@ -18,23 +18,6 @@ const ROOT         = __dirname;
 const CONFIG_PATH  = path.join(ROOT, 'ytdl-config.json');
 const LIBRARY_PATH = path.join(ROOT, 'ytdl-library.json');
 
-// ─── YT-DLP PATH AUTO-DETECT ─────────────────────────────────────────────────
-function findYtDlp() {
-    if (process.env.YTDLP_PATH && fs.existsSync(process.env.YTDLP_PATH)) return process.env.YTDLP_PATH;
-    const candidates = [
-        path.join(os.homedir(), '.local', 'bin', 'yt-dlp'),
-        '/usr/local/bin/yt-dlp',
-        '/usr/bin/yt-dlp',
-        '/opt/homebrew/bin/yt-dlp',   // macOS Homebrew
-        'yt-dlp',                      // fallback ke PATH
-    ];
-    const found = candidates.find(p => { try { return p === 'yt-dlp' || fs.existsSync(p); } catch(_) { return false; } });
-    if (!found) throw new Error('yt-dlp tidak ditemukan. Install dengan: pip install yt-dlp');
-    return found;
-}
-const YTDLP = findYtDlp();
-console.log(`🔧 yt-dlp path: ${YTDLP}`);
-
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 function formatBytes(bytes) {
     if (!bytes || bytes === 0) return null;
@@ -102,6 +85,7 @@ let downloadHistory = loadLibrary();
 // ─── RUNTIME STATE ───────────────────────────────────────────────────────────
 let currentProgress = {};
 let activeProcesses = {};
+let pausedProcesses = {}; // set of paused URLs
 
 // ─── STATIC VIDEO FILES ──────────────────────────────────────────────────────
 app.use('/files', (req, res, next) => express.static(config.downloadFolder)(req, res, next));
@@ -274,7 +258,8 @@ app.get('/api/stream/:key', (req, res) => {
 app.get('/api/info', (req, res) => {
     const url = req.query.url;
     if (!url) return res.status(400).json({ error: 'URL diperlukan' });
-    exec(`"${YTDLP}" --extractor-args "youtube:player_client=android_vr" -J "${url}"`, { maxBuffer: 1024 * 1024 * 20 }, (error, stdout, stderr) => {
+    const ytdlpPath = '/home/tb/.local/bin/yt-dlp';
+    exec(`${ytdlpPath} --extractor-args "youtube:player_client=android_vr" -J "${url}"`, { maxBuffer: 1024 * 1024 * 20 }, (error, stdout, stderr) => {
         if (error) return res.status(500).json({ error: 'Gagal memuat info video', detail: stderr });
         try {
             const info    = JSON.parse(stdout);
@@ -323,14 +308,16 @@ app.post('/api/download', (req, res) => {
         phase: 'video', speed: null, eta: null, filesize: null
     };
 
-    const ytProcess = spawn(YTDLP, [
+    const ytProcess = spawn('/home/tb/.local/bin/yt-dlp', [
         '--extractor-args', 'youtube:player_client=android_vr',
         '-f', `${format_id}+bestaudio[ext=m4a]/bestaudio/best`,
         '--merge-output-format', 'mp4',
         '--newline',
         '-o', outputPath,
         url
-    ]);
+    ], {
+        detached: true   // Buat process group sendiri agar SIGSTOP/SIGCONT bisa dikirim ke seluruh group
+    });
     activeProcesses[url] = ytProcess;
 
     let destCount = 0;
@@ -423,6 +410,12 @@ app.post('/api/cancel', (req, res) => {
     const proc = activeProcesses[url];
     if (!proc) return res.status(404).json({ error: 'Proses tidak ditemukan' });
 
+    // Kalau sedang dijeda, resume dulu sebelum SIGKILL agar proses tidak hang
+    if (pausedProcesses[url]) {
+        try { process.kill(-proc.pid, 'SIGCONT'); } catch (_) {}
+        delete pausedProcesses[url];
+    }
+
     try { process.kill(-proc.pid, 'SIGKILL'); } catch (_) {
         try { proc.kill('SIGKILL'); } catch (__) {}
     }
@@ -440,6 +433,42 @@ app.post('/api/cancel', (req, res) => {
         } catch (_) {}
     }
     res.json({ success: true });
+});
+
+// ─── PAUSE / RESUME ──────────────────────────────────────────────────────────
+app.post('/api/pause', (req, res) => {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ error: 'URL diperlukan' });
+    const proc = activeProcesses[url];
+    if (!proc) return res.status(404).json({ error: 'Proses tidak ditemukan' });
+
+    // Karena spawn memakai detached:true, proc.pid adalah process group leader.
+    // Kirim sinyal ke -pid agar seluruh group (termasuk yt-dlp child) ikut kena.
+    const sendSignal = (sig) => {
+        try {
+            process.kill(-proc.pid, sig); // seluruh process group
+        } catch (e1) {
+            try { proc.kill(sig); } catch (e2) {
+                console.error(`[pause] Gagal kirim ${sig}:`, e2.message);
+            }
+        }
+    };
+
+    if (pausedProcesses[url]) {
+        // RESUME
+        sendSignal('SIGCONT');
+        delete pausedProcesses[url];
+        if (currentProgress[url]) currentProgress[url].paused = false;
+        console.log(`▶ Resumed: ${url}`);
+        res.json({ success: true, paused: false });
+    } else {
+        // PAUSE
+        sendSignal('SIGSTOP');
+        pausedProcesses[url] = true;
+        if (currentProgress[url]) currentProgress[url].paused = true;
+        console.log(`⏸ Paused: ${url}`);
+        res.json({ success: true, paused: true });
+    }
 });
 
 // ─── LIBRARY ENDPOINTS ───────────────────────────────────────────────────────
