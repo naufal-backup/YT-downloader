@@ -11,6 +11,23 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// ─── YT-DLP AUTO-DETECT ──────────────────────────────────────────────────────
+// Priority: env YTDLP_PATH → ~/.local/bin → /usr/local/bin → /usr/bin → /opt/homebrew/bin
+function findYtDlp() {
+    if (process.env.YTDLP_PATH && fs.existsSync(process.env.YTDLP_PATH))
+        return process.env.YTDLP_PATH;
+    const candidates = [
+        path.join(os.homedir(), '.local', 'bin', 'yt-dlp'),
+        '/usr/local/bin/yt-dlp',
+        '/usr/bin/yt-dlp',
+        '/opt/homebrew/bin/yt-dlp',  // macOS Homebrew
+    ];
+    const found = candidates.find(p => { try { return fs.existsSync(p); } catch(_) { return false; } });
+    if (!found) throw new Error('yt-dlp tidak ditemukan. Install: pip install yt-dlp');
+    return found;
+}
+const YTDLP = findYtDlp();
+
 const PORT = 8989;
 
 // ─── PATHS (semua relatif terhadap folder server.js) ──────────────────────────
@@ -258,8 +275,7 @@ app.get('/api/stream/:key', (req, res) => {
 app.get('/api/info', (req, res) => {
     const url = req.query.url;
     if (!url) return res.status(400).json({ error: 'URL diperlukan' });
-    const ytdlpPath = '/home/tb/.local/bin/yt-dlp';
-    exec(`${ytdlpPath} --extractor-args "youtube:player_client=android_vr" -J "${url}"`, { maxBuffer: 1024 * 1024 * 20 }, (error, stdout, stderr) => {
+    exec(`"${YTDLP}" --extractor-args "youtube:player_client=android_vr" -J "${url}"`, { maxBuffer: 1024 * 1024 * 20 }, (error, stdout, stderr) => {
         if (error) return res.status(500).json({ error: 'Gagal memuat info video', detail: stderr });
         try {
             const info    = JSON.parse(stdout);
@@ -308,7 +324,7 @@ app.post('/api/download', (req, res) => {
         phase: 'video', speed: null, eta: null, filesize: null
     };
 
-    const ytProcess = spawn('/home/tb/.local/bin/yt-dlp', [
+    const ytProcess = spawn(YTDLP, [
         '--extractor-args', 'youtube:player_client=android_vr',
         '-f', `${format_id}+bestaudio[ext=m4a]/bestaudio/best`,
         '--merge-output-format', 'mp4',

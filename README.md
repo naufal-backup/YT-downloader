@@ -1,6 +1,7 @@
 # YT Downloader
 
-YouTube video downloader berbasis **yt-dlp** dengan antarmuka browser via Tampermonkey. Terdiri dari backend Node.js (`server.js`) dan userscript (`YT_Downloader_user.js`).
+YouTube video downloader berbasis **yt-dlp** dengan antarmuka browser via Tampermonkey.
+Terdiri dari backend Node.js (`server.js`) dan userscript (`YT_Downloader_user.js`).
 
 ---
 
@@ -8,11 +9,11 @@ YouTube video downloader berbasis **yt-dlp** dengan antarmuka browser via Tamper
 
 | Komponen | Versi Minimum | Keterangan |
 |---|---|---|
-| Node.js | v18+ | JavaScript runtime untuk backend |
+| Node.js | v18+ | Runtime backend |
 | npm | v8+ | Sudah termasuk bersama Node.js |
 | yt-dlp | 2025+ | Downloader utama |
 | ffmpeg | Terbaru | Wajib untuk merge video + audio |
-| Firefox | Terbaru | Browser untuk Tampermonkey |
+| Firefox / Chrome / Brave | Terbaru | Browser dengan Tampermonkey |
 | Tampermonkey | Terbaru | Ekstensi untuk userscript |
 
 ---
@@ -40,7 +41,6 @@ sudo pacman -S nodejs npm
 **Ubuntu / Debian:**
 ```bash
 sudo apt install ffmpeg -y
-ffmpeg -version
 ```
 
 **Arch Linux:**
@@ -56,109 +56,134 @@ sudo pacman -S ffmpeg
 pip install yt-dlp --break-system-packages
 ```
 
-Atau install via binary langsung (jika pip tidak tersedia):
-```bash
-sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
-     -o /usr/local/bin/yt-dlp
-sudo chmod a+rx /usr/local/bin/yt-dlp
-```
+> yt-dlp akan terinstall di `~/.local/bin/yt-dlp`. Server akan menemukannya secara otomatis.
 
 Verifikasi:
 ```bash
 yt-dlp --version
-which yt-dlp    # catat path ini
+```
+
+Jika `yt-dlp: command not found`, tambahkan ke PATH:
+
+**Bash/Zsh:**
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
+```
+
+**Fish:**
+```bash
+fish_add_path ~/.local/bin
 ```
 
 ---
 
-### 4. Konfigurasi yt-dlp (penting untuk Ubuntu)
-
-Node.js terkadang tidak bisa menemukan `yt-dlp` karena PATH environment yang berbeda. Tambahkan konfigurasi berikut:
+### 4. Backend
 
 ```bash
-mkdir -p ~/.config/yt-dlp
-echo '--js-runtimes node:/usr/local/bin/node' >> ~/.config/yt-dlp/config
-```
-
-> **Catatan:** Sesuaikan path Node.js dengan output `which node` di sistem Anda.
-
----
-
-### 5. Backend (server.js)
-
-```bash
-# Clone atau pindahkan file ke folder project
 mkdir -p ~/YT-downloader/yt-downloader-backend
 cd ~/YT-downloader/yt-downloader-backend
 
-# Install dependencies Node.js
+# Install dependencies
 npm install express cors
 
 # Jalankan server
 node server.js
 ```
 
-Jika berhasil, output akan tampil:
+Output saat berhasil:
 ```
+🔧 yt-dlp  : /home/<user>/.local/bin/yt-dlp
 ✅ YT-Downloader backend aktif di http://localhost:8989
 📁 Download folder : /home/<user>/Downloads/YT-Downloads
+```
+
+> **Port selalu 8989.** Tidak perlu dikonfigurasi.
+
+---
+
+### 5. Jalankan Otomatis saat Boot (systemd)
+
+```bash
+mkdir -p ~/.config/systemd/user
+nano ~/.config/systemd/user/yt-downloader.service
+```
+
+Isi file:
+```ini
+[Unit]
+Description=YT Downloader Backend
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/YT-downloader/yt-downloader-backend
+ExecStart=/usr/local/bin/node %h/YT-downloader/yt-downloader-backend/server.js
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=default.target
+```
+
+> `%h` adalah shortcut systemd untuk home directory — tidak perlu hardcode username.
+
+Aktifkan:
+```bash
+systemctl --user enable yt-downloader.service
+systemctl --user start yt-downloader.service
+loginctl enable-linger $USER
+```
+
+Perintah berguna:
+```bash
+systemctl --user status yt-downloader.service
+systemctl --user restart yt-downloader.service
+journalctl --user -u yt-downloader.service -f
 ```
 
 ---
 
 ### 6. Tampermonkey Userscript
 
-1. Install ekstensi **Tampermonkey** di Firefox dari [addons.mozilla.org](https://addons.mozilla.org/en-US/firefox/addon/tampermonkey/)
-2. Buka dashboard Tampermonkey → klik **"+"** untuk tambah script baru
-3. Hapus isi default, paste seluruh isi file `YT_Downloader_user.js`
-4. Tekan **Ctrl+S** untuk simpan
-5. Buka YouTube — tombol download akan muncul otomatis
+1. Install ekstensi **Tampermonkey** di browser
+2. Buka dashboard Tampermonkey → klik **"+"**
+3. Hapus isi default, paste seluruh isi `YT_Downloader_user.js`
+4. **Ctrl+S** untuk simpan
+5. Buka YouTube — tombol download muncul otomatis
 
 ---
 
-## Menjalankan
+## Konfigurasi Opsional
 
-Setiap kali ingin menggunakan, jalankan backend terlebih dahulu:
-
-```bash
-cd ~/YT-downloader/yt-downloader-backend
-node server.js
-```
-
-Lalu buka YouTube di Firefox seperti biasa.
-
----
-
-## Troubleshooting
-
-**Error: `yt-dlp` tidak ditemukan saat server jalan**
-
-Jika yt-dlp terinstall via pip di `~/.local/bin`, set environment variable sebelum menjalankan server:
-```bash
-YTDLP_PATH=$(which yt-dlp) node server.js
-```
-
-**Error: `ffmpeg not found`**
-```bash
-sudo apt install ffmpeg -y   # Ubuntu
-sudo pacman -S ffmpeg        # Arch
-```
-
-**Error: `n challenge solving failed`**
-
-Pastikan konfigurasi yt-dlp sudah dibuat (lihat langkah 4) dan Node.js terdeteksi:
-```bash
-yt-dlp --verbose --list-formats "https://youtube.com/watch?v=dQw4w9WgXcQ" 2>&1 | grep -i node
-```
-
-Harus ada output: `node (available)`
-
-**Port 8989 sudah dipakai**
+### yt-dlp path kustom (jika auto-detect gagal)
 
 ```bash
-lsof -i :8989
-kill -9 <PID>
+YTDLP_PATH=/path/kustom/yt-dlp node server.js
 ```
+
+Atau di file `.service`:
+```ini
+[Service]
+Environment=YTDLP_PATH=/path/kustom/yt-dlp
+```
+
+### Akses dari perangkat lain di jaringan lokal
+
+1. Cari IP lokal komputer server:
+   ```bash
+   ip addr | grep "inet " | grep -v 127
+   # contoh output: 192.168.1.10
+   ```
+
+2. Di browser perangkat lain, buka konsol JavaScript (F12) lalu jalankan:
+   ```javascript
+   localStorage.setItem('ytdl_host', 'http://192.168.1.10:8989')
+   ```
+
+3. Reload halaman YouTube.
+
+> Port tetap **8989**.
 
 ---
 
@@ -167,15 +192,35 @@ kill -9 <PID>
 ```
 yt-downloader-backend/
 ├── server.js              # Backend API
-├── ytdl-config.json       # Konfigurasi (auto-generated)
+├── ytdl-config.json       # Konfigurasi folder (auto-generated)
 ├── ytdl-library.json      # Library video (auto-generated)
-└── YT_Downloader_user.js  # Tampermonkey userscript
+├── YT_Downloader_user.js  # Tampermonkey userscript
+└── README.md              # Dokumentasi ini
 ```
 
 ---
 
-## Catatan Penting
+## Troubleshooting
 
-- Backend harus berjalan di background setiap kali ingin download
-- Video yang didownload tersimpan di `~/Downloads/YT-Downloads` (default, bisa diubah dari UI)
-- Untuk video yang membutuhkan login (private/age-restricted), fitur cookies perlu dikonfigurasi ulang secara manual
+**yt-dlp tidak ditemukan saat server start**
+```bash
+which yt-dlp
+pip install yt-dlp --break-system-packages
+fish_add_path ~/.local/bin   # Fish shell
+```
+
+**ffmpeg not found**
+```bash
+sudo apt install ffmpeg -y   # Ubuntu/Debian
+sudo pacman -S ffmpeg        # Arch Linux
+```
+
+**Port 8989 sudah dipakai**
+```bash
+lsof -i :8989
+kill -9 <PID>
+```
+
+**Koneksi terputus di userscript**
+- Pastikan `node server.js` sudah berjalan
+- Cek log: `journalctl --user -u yt-downloader.service -f`

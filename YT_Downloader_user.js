@@ -20,7 +20,9 @@ window.__ytdl_active_version = "11.21";
 document.querySelectorAll('#ytdl-fab-container, #ytdl-modal, #ytdl-popup, .ytdl-hover-dl').forEach(el => el.remove());
 
 // FIX: Gunakan http bukan https agar cocok dengan server Express biasa
-const API = 'http://localhost:8989';
+// Host bisa diubah via konsol browser jika server bukan di localhost:
+// localStorage.setItem('ytdl_host', 'http://192.168.1.10:8989')
+const API = localStorage.getItem('ytdl_host') || 'http://localhost:8989';
 
 // GLOBAL FUNGSI: Mengecek apakah item adalah Shorts
 const checkIsShorts = (item) => {
@@ -918,7 +920,7 @@ function loadHistory(force) {
             }
         },
         onerror: () => {
-            document.getElementById('h-list').innerHTML = `<p style="text-align:center;color:#f55;margin-top:20px;padding:20px;border:1px solid #f55;border-radius:10px;background:#200;">❌ <b>Koneksi Terputus</b><br><br>Script tidak dapat menghubungi <code>localhost:8989</code>. Pastikan backend server Anda sudah menyala.</p>`;
+            document.getElementById('h-list').innerHTML = `<p style="text-align:center;color:#f55;margin-top:20px;padding:20px;border:1px solid #f55;border-radius:10px;background:#200;">❌ <b>Koneksi Terputus</b><br><br>Script tidak dapat menghubungi <code>${API}</code>. Pastikan backend server Anda sudah menyala.</p>`;
         }
     });
 }
@@ -1148,7 +1150,7 @@ function openQualityPopup(videoUrl, titleHint, isShorts) {
                 cont.appendChild(btn);
             });
         },
-        onerror: () => { document.getElementById('q-list').innerHTML = '<span style="color:#f55">❌ Koneksi ke backend terputus.<br>(localhost:8989 down)</span>'; }
+        onerror: () => { document.getElementById('q-list').innerHTML = '<span style="color:#f55">❌ Koneksi ke backend terputus.<br>(${API} down)</span>'; }
     });
 }
 
