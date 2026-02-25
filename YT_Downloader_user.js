@@ -20,9 +20,7 @@ window.__ytdl_active_version = "11.21";
 document.querySelectorAll('#ytdl-fab-container, #ytdl-modal, #ytdl-popup, .ytdl-hover-dl').forEach(el => el.remove());
 
 // FIX: Gunakan http bukan https agar cocok dengan server Express biasa
-// Host bisa diubah via konsol browser jika server bukan di localhost:
-// localStorage.setItem('ytdl_host', 'http://192.168.1.10:8989')
-const API = localStorage.getItem('ytdl_host') || 'http://localhost:8989';
+const API = 'http://localhost:8989';
 
 // GLOBAL FUNGSI: Mengecek apakah item adalah Shorts
 const checkIsShorts = (item) => {
@@ -153,6 +151,13 @@ ytd-rich-item-renderer:hover .ytdl-hover-dl, ytd-video-renderer:hover .ytdl-hove
 .pbar-v{background:linear-gradient(90deg,#f44,#e00)}
 .pbar-a{background:linear-gradient(90deg,#48f,#3ea6ff)}
 .pbar-m{background:linear-gradient(90deg,#fc0,#fa0);animation:blink .7s infinite alternate}
+.pbar-s{background:linear-gradient(90deg,#c0f,#a0f);animation:blink .7s infinite alternate}
+.sub-toggle-row{display:flex;align-items:center;gap:8px;margin-top:6px;padding:6px 10px;background:#0d0d1a;border-radius:7px;border:1px solid #222;flex-shrink:0}
+.sub-toggle-row label{font-size:11px;color:#888;flex:1;cursor:pointer}
+.sub-toggle-row select{background:#1a1a2e;color:#ccc;border:1px solid #333;border-radius:5px;padding:3px 8px;font-size:11px;cursor:pointer;max-width:160px}
+.sub-on-badge{background:#a0f;color:#fff;font-size:9px;padding:1px 5px;border-radius:3px;font-weight:700}
+.dl-sub-row{background:#0d0d1a;border:1px solid #1a1a3a;border-radius:6px;padding:6px 10px;margin:8px 0 0;font-size:11px;color:#888;display:flex;align-items:center;gap:6px}
+.dl-sub-row select{background:#111;color:#ccc;border:1px solid #333;border-radius:4px;padding:2px 6px;font-size:11px;cursor:pointer}
 @keyframes blink{from{opacity:.6}to{opacity:1}}
 .dl-foot{display:flex;justify-content:space-between;align-items:center;margin-top:5px;gap:4px}
 .dl-foot-btns{display:flex;gap:4px;align-items:center;flex-shrink:0}
@@ -327,6 +332,11 @@ document.body.insertAdjacentHTML('beforeend', `
 <div id="player-wrap">
 <p id="p-title">Library & Player</p>
 <video id="v-player" controls></video>
+<div class="sub-toggle-row" id="sub-toggle-row" style="display:none">
+  💬 <label for="sub-track-sel">Subtitle:</label>
+  <select id="sub-track-sel"><option value="">— Nonaktif —</option></select>
+  <span class="sub-on-badge" id="sub-on-badge" style="display:none">ON</span>
+</div>
 </div>
 <div id="dl-panel"><p class="dl-empty">Tidak ada unduhan aktif</p></div>
 <button id="close-ytdl">✕ TUTUP</button>
@@ -710,8 +720,9 @@ function renderDlPanel(data) {
             panel.appendChild(card);
         }
 
-        const vp       = info.videoPercent || 0;
-        const ap       = info.audioPercent || 0;
+        const vp       = info.videoPercent    || 0;
+        const ap       = info.audioPercent    || 0;
+        const sp       = info.subtitlePercent || 0;
         const phase    = info.phase || 'video';
         const isPaused = !!info.paused;
         const spd      = info.speed ? `⚡ ${info.speed}` : '';
@@ -720,20 +731,41 @@ function renderDlPanel(data) {
         const qual     = info.quality || '';
         const fsz      = info.filesize ? `💾 ${info.filesize}` : '';
         const thumb    = info.thumbnail || '';
+        const hasSub   = !!info.subtitle_lang;
 
-        const done      = phase === 'done';
-        const merging   = phase === 'merging';
-        const cancelled = phase === 'cancelled';
-        const active    = !done && !merging && !cancelled;
+        const done       = phase === 'done';
+        const merging    = phase === 'merging';
+        const cancelled  = phase === 'cancelled';
+        const subMerge   = phase === 'subtitle';
+        const subDl      = phase === 'subtitle_dl';
+        const active     = !done && !merging && !cancelled && !subMerge;
 
-        const statusColor = { video:'#f44', audio:'#3ea6ff', merging:'#fa0', done:'#0c6', cancelled:'#f44' }[phase] || '#888';
-        const pausedStatusColor = '#fa0';
-        const statusText  = isPaused
-            ? '⏸ Dijeda'
-            : ({ video:'Mengunduh...', audio:'Mengunduh...', merging:'Menggabungkan...', done:'✅ Selesai', cancelled:'❌ Dibatalkan' }[phase] || phase);
+        const videoActive = phase === 'video';
+        const audioActive = phase === 'audio' || phase === 'subtitle_dl';
 
-        // Progress bars - dim when paused
-        const pbarOpacity = isPaused ? 'opacity:0.4;' : '';
+        const statusColor = isPaused ? '#fa0'
+            : ({ video:'#f44', audio:'#3ea6ff', subtitle_dl:'#a0f', merging:'#fa0', subtitle:'#a0f', done:'#0c6', cancelled:'#f44' }[phase] || '#888');
+        const statusText = isPaused ? '⏸ Dijeda'
+            : ({ video:'⬇ Video...', audio:'⬇ Audio...', subtitle_dl:'💬 Subtitle...', merging:'🔀 Menggabungkan...', subtitle:'💬 Menyisipkan subtitle...', done:'✅ Selesai', cancelled:'❌ Dibatalkan' }[phase] || phase);
+
+        const vDim = videoActive ? '' : (vp >= 100 ? 'opacity:0.45;' : 'opacity:0.2;');
+        const aDim = audioActive ? '' : (ap >= 100 ? 'opacity:0.45;' : 'opacity:0.2;');
+        const pauseDim = isPaused ? 'opacity:0.4;' : '';
+
+        const buildBars = () => `
+            <div class="dl-row">
+                <span style="${vDim}${pauseDim}">🎬 Video <b>${vp.toFixed(1)}%</b></span>
+                <span class="spd">${videoActive && !isPaused ? spd : ''}</span>
+            </div>
+            <div class="pbar" style="${vDim}${pauseDim}"><div class="pbar-fill pbar-v" style="width:${vp}%"></div></div>
+            <div class="dl-row">
+                <span style="${aDim}${pauseDim}">🔊 Audio <b>${ap.toFixed(1)}%</b></span>
+                <span class="eta">${audioActive && !isPaused ? eta : ''}</span>
+            </div>
+            <div class="pbar" style="${aDim}${pauseDim}"><div class="pbar-fill pbar-a" style="width:${ap}%"></div></div>
+            ${subDl ? `<div class="dl-row"><span style="color:#a0f">💬 Subtitle <b>${sp.toFixed(1)}%</b></span></div>
+            <div class="pbar"><div class="pbar-fill pbar-s" style="width:${sp}%"></div></div>` : ''}
+        `;
 
         card.innerHTML = `
             <div class="dl-hdr">
@@ -741,14 +773,19 @@ function renderDlPanel(data) {
                 <div class="dl-hdr-text">${title}</div>
                 ${qual ? `<span class="dl-badge">${qual}</span>` : ''}
             </div>
-            ${isPaused ? `<div class="dl-paused-label">⏸ Unduhan dijeda — klik Lanjutkan untuk melanjutkan</div>` : ''}
-            ${cancelled ? `<p style="text-align:center;color:#f44;font-size:11px;margin:4px 0">❌ Unduhan dibatalkan</p>` :
-              merging   ? `<div class="dl-row"><span>🔀 Menggabungkan...</span><span class="spd">${spd}</span></div><div class="pbar" style="${pbarOpacity}"><div class="pbar-fill pbar-m" style="width:100%"></div></div>` :
-              done      ? `<div class="dl-row"><span style="color:#0c6">✅ Selesai</span><span>${fsz}</span></div><div class="pbar"><div class="pbar-fill pbar-v" style="width:100%"></div></div>` :
-                          `<div class="dl-row"><span>🎬 Video <b>${vp.toFixed(1)}%</b></span><span class="spd">${isPaused ? '' : spd}</span></div><div class="pbar" style="${pbarOpacity}"><div class="pbar-fill pbar-v" style="width:${vp}%"></div></div>
-                           <div class="dl-row"><span>🔊 Audio <b>${ap.toFixed(1)}%</b></span><span class="eta">${isPaused ? '' : eta}</span></div><div class="pbar" style="${pbarOpacity}"><div class="pbar-fill pbar-a" style="width:${ap}%"></div></div>`}
+            ${isPaused ? `<div class="dl-paused-label">⏸ Dijeda</div>` : ''}
+            ${cancelled  ? `<p style="text-align:center;color:#f44;font-size:11px;margin:4px 0">❌ Dibatalkan</p>` :
+              done       ? `<div class="dl-row"><span style="color:#0c6">✅ Selesai</span><span>${fsz}</span></div>
+                            <div class="pbar"><div class="pbar-fill pbar-v" style="width:100%"></div></div>` :
+              subMerge   ? `${buildBars()}
+                            <div class="dl-row"><span style="color:#a0f">💬 Menyisipkan subtitle ke file...</span></div>
+                            <div class="pbar"><div class="pbar-fill pbar-s" style="width:100%"></div></div>` :
+              merging    ? `${buildBars()}
+                            <div class="dl-row"><span style="color:#fa0">🔀 Menggabungkan...</span></div>
+                            <div class="pbar"><div class="pbar-fill pbar-m" style="width:100%"></div></div>` :
+                           buildBars()}
             <div class="dl-foot">
-                <span class="dl-status" style="color:${isPaused && active ? pausedStatusColor : statusColor}">${active ? statusText : ''}</span>
+                <span class="dl-status" style="color:${statusColor}">${!done && !cancelled ? statusText : ''}</span>
                 <span>${done || cancelled ? fsz : ''}</span>
                 ${active ? `
                 <div class="dl-foot-btns">
@@ -817,11 +854,56 @@ function pathToStreamKey(fullPath) {
 
 function playFile(fileName, folderPath, title) {
     document.getElementById('p-title').textContent = title || fileName;
-    if (folderPath) { player.src = `${API}/api/stream/${pathToStreamKey(folderPath.replace(/\/$/, '') + '/' + fileName)}`; }
-    else { player.src = `${API}/files/${encodeURIComponent(fileName)}`; }
+    const src = folderPath
+        ? `${API}/api/stream/${pathToStreamKey(folderPath.replace(/\/$/, '') + '/' + fileName)}`
+        : `${API}/files/${encodeURIComponent(fileName)}`;
+    player.src = src;
     player.play();
     if (!playerVisible) { playerVisible = true; localStorage.setItem('ytdl_player', 'visible'); applyPlayerVisibility(); }
     updateToggleBar(title || fileName, Object.keys(_w.__ytdlProg || {}).length);
+
+    // Reset subtitle UI
+    const toggleRow = document.getElementById('sub-toggle-row');
+    const sel       = document.getElementById('sub-track-sel');
+    const badge     = document.getElementById('sub-on-badge');
+    player.querySelectorAll('track').forEach(t => t.remove());
+    sel.innerHTML = '<option value="">— Nonaktif —</option>';
+    if (badge) badge.style.display = 'none';
+    if (toggleRow) toggleRow.style.display = 'none';
+
+    if (!fileName || !folderPath) return;
+
+    // Minta daftar subtitle track dari server
+    GM_xmlhttpRequest({
+        method: 'GET',
+        url: `${API}/api/subtitles?fileName=${encodeURIComponent(fileName)}&folderPath=${encodeURIComponent(folderPath)}`,
+        onload: (res) => {
+            try {
+                const tracks = JSON.parse(res.responseText);
+                if (!tracks || !tracks.length) return;
+                toggleRow.style.display = 'flex';
+                tracks.forEach(t => {
+                    const opt = document.createElement('option');
+                    opt.value = t.streamKey;
+                    opt.textContent = `${t.label} (${t.lang})`;
+                    sel.appendChild(opt);
+                    const track = document.createElement('track');
+                    track.kind    = 'subtitles';
+                    track.label   = t.label;
+                    track.srclang = t.lang;
+                    track.src     = `${API}/api/subtitle-stream/${t.streamKey}`;
+                    player.appendChild(track);
+                });
+                sel.onchange = function() {
+                    const chosen = this.options[this.selectedIndex].textContent;
+                    Array.from(player.textTracks).forEach(tt => {
+                        tt.mode = (tt.label === chosen && this.value !== '') ? 'showing' : 'hidden';
+                    });
+                    if (badge) badge.style.display = this.value ? 'inline' : 'none';
+                };
+            } catch(_) {}
+        }
+    });
 }
 
 /* ══════════════════════════════════════════════════════
@@ -920,7 +1002,7 @@ function loadHistory(force) {
             }
         },
         onerror: () => {
-            document.getElementById('h-list').innerHTML = `<p style="text-align:center;color:#f55;margin-top:20px;padding:20px;border:1px solid #f55;border-radius:10px;background:#200;">❌ <b>Koneksi Terputus</b><br><br>Script tidak dapat menghubungi <code>${API}</code>. Pastikan backend server Anda sudah menyala.</p>`;
+            document.getElementById('h-list').innerHTML = `<p style="text-align:center;color:#f55;margin-top:20px;padding:20px;border:1px solid #f55;border-radius:10px;background:#200;">❌ <b>Koneksi Terputus</b><br><br>Script tidak dapat menghubungi <code>localhost:8989</code>. Pastikan backend server Anda sudah menyala.</p>`;
         }
     });
 }
@@ -1137,20 +1219,35 @@ function openQualityPopup(videoUrl, titleHint, isShorts) {
 
             if (!data.formats || !data.formats.length) { cont.innerHTML = '<span style="color:#f55">Tidak ada format tersedia</span>'; return; }
 
+            // Subtitle selector
+            const subLangs = data.subtitleLangs || [];
+            if (subLangs.length > 0) {
+                const subRow = document.createElement('div');
+                subRow.className = 'dl-sub-row';
+                subRow.innerHTML = `💬 <label style="color:#a0f;font-weight:700">Subtitle:</label>
+                    <select id="popup-sub-sel" style="margin-left:4px">
+                        <option value="">— Tidak —</option>
+                        ${subLangs.map(l => `<option value="${l}"${l==='id'||l==='en'?' selected':''} >${l}</option>`).join('')}
+                    </select>`;
+                cont.appendChild(subRow);
+            }
+
             data.formats.forEach(f => {
                 const btn = document.createElement('button'); btn.className = 'q-btn';
                 btn.innerHTML = `${f.quality}${f.filesize ? `<span class="q-sz">~${f.filesize}</span>` : ''}`;
                 btn.onclick = () => {
+                    const subSel = document.getElementById('popup-sub-sel');
+                    const subtitle_lang = subSel ? subSel.value : '';
                     GM_xmlhttpRequest({
                         method: 'POST', url: `${API}/api/download`, headers: {'Content-Type':'application/json'},
-                        data: JSON.stringify({ url: videoUrl, format_id: f.format_id, title: data.title, quality: f.quality, thumbnail: data.thumbnail, isShorts: !!isShorts, sourceUrl: videoUrl })
+                        data: JSON.stringify({ url: videoUrl, format_id: f.format_id, title: data.title, quality: f.quality, thumbnail: data.thumbnail, isShorts: !!isShorts, sourceUrl: videoUrl, subtitle_lang: subtitle_lang || undefined })
                     });
                     popup.classList.remove('show');
                 };
                 cont.appendChild(btn);
             });
         },
-        onerror: () => { document.getElementById('q-list').innerHTML = '<span style="color:#f55">❌ Koneksi ke backend terputus.<br>(${API} down)</span>'; }
+        onerror: () => { document.getElementById('q-list').innerHTML = '<span style="color:#f55">❌ Koneksi ke backend terputus.<br>(localhost:8989 down)</span>'; }
     });
 }
 

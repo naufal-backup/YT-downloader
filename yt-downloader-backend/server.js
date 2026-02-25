@@ -12,7 +12,6 @@ app.use(cors());
 app.use(express.json());
 
 // ─── YT-DLP AUTO-DETECT ──────────────────────────────────────────────────────
-// Priority: env YTDLP_PATH → ~/.local/bin → /usr/local/bin → /usr/bin → /opt/homebrew/bin
 function findYtDlp() {
     if (process.env.YTDLP_PATH && fs.existsSync(process.env.YTDLP_PATH))
         return process.env.YTDLP_PATH;
@@ -20,7 +19,7 @@ function findYtDlp() {
         path.join(os.homedir(), '.local', 'bin', 'yt-dlp'),
         '/usr/local/bin/yt-dlp',
         '/usr/bin/yt-dlp',
-        '/opt/homebrew/bin/yt-dlp',  // macOS Homebrew
+        '/opt/homebrew/bin/yt-dlp',
     ];
     const found = candidates.find(p => { try { return fs.existsSync(p); } catch(_) { return false; } });
     if (!found) throw new Error('yt-dlp tidak ditemukan. Install: pip install yt-dlp');
@@ -271,15 +270,65 @@ app.get('/api/stream/:key', (req, res) => {
     }
 });
 
+
+// ─── SUBTITLE TRACKS ─────────────────────────────────────────────────────────
+// Baca track subtitle dari mp4 (via ffprobe) untuk ditampilkan di player
+app.get('/api/subtitles', (req, res) => {
+    const { fileName, folderPath } = req.query;
+    if (!fileName) return res.json([]);
+    const fp       = folderPath || config.downloadFolder;
+    const filePath = path.join(fp, fileName);
+    if (!fs.existsSync(filePath)) return res.json([]);
+
+    exec(`ffprobe -v quiet -print_format json -show_streams "${filePath}"`,
+        { maxBuffer: 1024 * 1024 * 2 }, (err, stdout) => {
+        if (err) return res.json([]);
+        try {
+            const streams = JSON.parse(stdout).streams || [];
+            const tracks  = streams
+                .filter(st => st.codec_type === 'subtitle')
+                .map((st, i) => {
+                    const lang  = (st.tags && (st.tags.language || st.tags.LANGUAGE)) || `sub${i}`;
+                    const label = (st.tags && (st.tags.title || st.tags.TITLE)) || lang;
+                    const key   = Buffer.from(JSON.stringify({ path: filePath, index: st.index })).toString('base64url');
+                    return { lang, label, index: st.index, streamKey: key };
+                });
+            res.json(tracks);
+        } catch(_) { res.json([]); }
+    });
+});
+
+// Stream subtitle track sebagai WebVTT untuk <track> di browser
+app.get('/api/subtitle-stream/:key', (req, res) => {
+    let info;
+    try { info = JSON.parse(Buffer.from(req.params.key, 'base64url').toString('utf8')); }
+    catch(_) { return res.status(400).send('Invalid key'); }
+
+    const { path: filePath, index } = info;
+    const allowed = [config.downloadFolder, ...(config.scanFolders || [])].filter(Boolean);
+    if (!allowed.some(f => filePath.startsWith(path.resolve(f))) || !fs.existsSync(filePath))
+        return res.status(403).send('Akses ditolak');
+
+    res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    const ff = spawn('ffmpeg', ['-i', filePath, '-map', `0:${index}`, '-f', 'webvtt', '-']);
+    ff.stdout.pipe(res);
+    ff.stderr.on('data', () => {});
+    ff.on('error', () => { if (!res.headersSent) res.status(500).send('ffmpeg error'); });
+    req.on('close', () => { try { ff.kill(); } catch(_) {} });
+});
+
 // ─── VIDEO INFO ──────────────────────────────────────────────────────────────
 app.get('/api/info', (req, res) => {
     const url = req.query.url;
     if (!url) return res.status(400).json({ error: 'URL diperlukan' });
-    exec(`"${YTDLP}" --extractor-args "youtube:player_client=android_vr" -J "${url}"`, { maxBuffer: 1024 * 1024 * 20 }, (error, stdout, stderr) => {
+    // Gunakan android_vr,web: android_vr untuk bypass n-challenge, web agar subtitle tersedia
+    exec(`"${YTDLP}" --extractor-args "youtube:player_client=android_vr,web" -J "${url}"`,
+        { maxBuffer: 1024 * 1024 * 20 }, (error, stdout, stderr) => {
         if (error) return res.status(500).json({ error: 'Gagal memuat info video', detail: stderr });
         try {
-            const info    = JSON.parse(stdout);
-            const seen    = new Set();
+            const info = JSON.parse(stdout);
+            const seen = new Set();
             const formats = [];
             info.formats
                 .filter(f => f.vcodec !== 'none' && f.height)
@@ -294,7 +343,16 @@ app.get('/api/info', (req, res) => {
                         filesize:  total > 5 * 1024 * 1024 ? formatBytes(total) : null
                     });
                 });
-            res.json({ title: info.title, thumbnail: info.thumbnail, formats });
+
+            // Kumpulkan semua bahasa subtitle (manual + auto-generated)
+            const subtitleLangs = [];
+            const allSubs = Object.assign({}, info.subtitles || {}, info.automatic_captions || {});
+            Object.keys(allSubs).forEach(lang => {
+                if (Array.isArray(allSubs[lang]) && allSubs[lang].length > 0)
+                    subtitleLangs.push(lang);
+            });
+
+            res.json({ title: info.title, thumbnail: info.thumbnail, formats, subtitleLangs });
         } catch (e) { res.status(500).json({ error: 'Parsing metadata gagal' }); }
     });
 });
@@ -311,7 +369,7 @@ app.get('/api/events', (req, res) => {
 
 // ─── DOWNLOAD ────────────────────────────────────────────────────────────────
 app.post('/api/download', (req, res) => {
-    const { url, format_id, title, quality, thumbnail, isShorts, sourceUrl } = req.body;
+    const { url, format_id, title, quality, thumbnail, isShorts, sourceUrl, subtitle_lang } = req.body;
     if (!url || !format_id || !title) return res.status(400).json({ error: 'Parameter tidak lengkap' });
 
     const safeName   = title.replace(/[^a-z0-9]/gi, '_').toLowerCase().substring(0, 120);
@@ -320,19 +378,29 @@ app.post('/api/download', (req, res) => {
 
     currentProgress[url] = {
         title, quality, thumbnail, fileName,
-        videoPercent: 0, audioPercent: 0,
-        phase: 'video', speed: null, eta: null, filesize: null
+        videoPercent: 0, audioPercent: 0, subtitlePercent: 0,
+        phase: 'video', speed: null, eta: null, filesize: null,
+        subtitle_lang: subtitle_lang || null
     };
 
-    const ytProcess = spawn(YTDLP, [
-        '--extractor-args', 'youtube:player_client=android_vr',
+    const ytArgs = [
+        '--extractor-args', 'youtube:player_client=android_vr,web',
         '-f', `${format_id}+bestaudio[ext=m4a]/bestaudio/best`,
         '--merge-output-format', 'mp4',
         '--newline',
-        '-o', outputPath,
-        url
-    ], {
-        detached: true   // Buat process group sendiri agar SIGSTOP/SIGCONT bisa dikirim ke seluruh group
+    ];
+    if (subtitle_lang) {
+        // Coba subtitle manual dulu, fallback ke auto-generated
+        ytArgs.push(
+            '--write-sub', '--write-auto-sub',
+            '--sub-lang', subtitle_lang,
+            '--sub-format', 'vtt/srt/best',
+            '--convert-subs', 'srt'
+        );
+    }
+    ytArgs.push('-o', outputPath, url);
+    const ytProcess = spawn(YTDLP, ytArgs, {
+        detached: true
     });
     activeProcesses[url] = ytProcess;
 
@@ -343,9 +411,23 @@ app.post('/api/download', (req, res) => {
         if (!currentProgress[url]) return;
         line = line.trim();
         if (!line) return;
+
         if (line.includes('[download] Destination:')) {
-            destCount++;
-            currentProgress[url].phase = destCount >= 2 ? 'audio' : 'video';
+            const dest = line.replace('[download] Destination:', '').trim().toLowerCase();
+            const isSub = dest.endsWith('.vtt') || dest.endsWith('.srt') ||
+                          dest.includes('.vtt.') || dest.includes('.srt.');
+            if (isSub) {
+                currentProgress[url].phase = 'subtitle_dl';
+            } else {
+                destCount++;
+                if (destCount === 1) {
+                    currentProgress[url].phase = 'video';
+                    currentProgress[url].videoPercent = 0;
+                } else {
+                    currentProgress[url].phase = 'audio';
+                    currentProgress[url].audioPercent = 0;
+                }
+            }
             return;
         }
         if (line.includes('[Merger]') || line.includes('Merging formats')) {
@@ -359,8 +441,10 @@ app.post('/api/download', (req, res) => {
         const size  = line.match(/of\s+~?\s*([\d.]+\s*\w+iB)/i);
         if (pct) {
             const p = parseFloat(pct[1]);
-            if (currentProgress[url].phase === 'video') currentProgress[url].videoPercent = p;
-            else if (currentProgress[url].phase === 'audio') currentProgress[url].audioPercent = p;
+            const ph = currentProgress[url].phase;
+            if      (ph === 'video')       currentProgress[url].videoPercent    = p;
+            else if (ph === 'audio')       currentProgress[url].audioPercent    = p;
+            else if (ph === 'subtitle_dl') currentProgress[url].subtitlePercent = p;
         }
         if (speed) currentProgress[url].speed = speed[1];
         if (eta)   currentProgress[url].eta   = eta[1];
@@ -382,32 +466,69 @@ app.post('/api/download', (req, res) => {
         if (!currentProgress[url]) return;
 
         if (code === 0 && fs.existsSync(outputPath)) {
-            const size = formatBytes(fs.statSync(outputPath).size);
-            currentProgress[url].phase        = 'done';
-            currentProgress[url].videoPercent = 100;
-            currentProgress[url].audioPercent = 100;
-            currentProgress[url].filesize     = size;
 
-            const entry = {
-                fileName,
-                folderPath: config.downloadFolder,
-                title,
-                quality,
-                thumbnail:  thumbnail || '',
-                filesize:   size,
-                isShorts:   !!isShorts,
-                sourceUrl:  sourceUrl || url,
-                date:       new Date().toISOString()
+            // Cari file subtitle (.srt / .vtt) hasil download
+            const subBase = path.basename(outputPath, '.mp4');
+            const subDir  = path.dirname(outputPath);
+            let subFile   = null;
+            try {
+                const files = fs.readdirSync(subDir);
+                // yt-dlp menyimpan subtitle sebagai: namafile.LANG.srt atau namafile.LANG.vtt
+                subFile = files
+                    .filter(f => f.startsWith(subBase) && f !== path.basename(outputPath) &&
+                                 (f.endsWith('.srt') || f.endsWith('.vtt')))
+                    .map(f => path.join(subDir, f))[0] || null;
+            } catch(_) {}
+
+            const finalize = () => {
+                if (!currentProgress[url]) return;
+                const size = formatBytes(fs.statSync(outputPath).size);
+                currentProgress[url].phase        = 'done';
+                currentProgress[url].videoPercent = 100;
+                currentProgress[url].audioPercent = 100;
+                currentProgress[url].filesize     = size;
+                const entry = {
+                    fileName, folderPath: config.downloadFolder,
+                    title, quality, thumbnail: thumbnail || '',
+                    filesize: size, isShorts: !!isShorts,
+                    sourceUrl: sourceUrl || url,
+                    date: new Date().toISOString(),
+                    hasSubtitle: !!subFile
+                };
+                const key = libKey(config.downloadFolder, fileName);
+                const idx = downloadHistory.findIndex(h => libKey(h.folderPath || config.downloadFolder, h.fileName) === key);
+                if (idx >= 0) downloadHistory[idx] = entry;
+                else downloadHistory.push(entry);
+                saveLibrary();
             };
 
-            const key = libKey(config.downloadFolder, fileName);
-            const idx = downloadHistory.findIndex(
-                h => libKey(h.folderPath || config.downloadFolder, h.fileName) === key
-            );
-            if (idx >= 0) downloadHistory[idx] = entry;
-            else downloadHistory.push(entry);
-
-            saveLibrary();
+            if (subFile) {
+                console.log(`💬 Merging subtitle: ${path.basename(subFile)}`);
+                if (currentProgress[url]) currentProgress[url].phase = 'subtitle';
+                const tmpOut = outputPath.replace(/\.mp4$/, '_sub.mp4');
+                const ff = spawn('ffmpeg', [
+                    '-i', outputPath,
+                    '-i', subFile,
+                    '-c', 'copy',
+                    '-c:s', 'mov_text',
+                    '-metadata:s:s:0', `language=${subtitle_lang || 'und'}`,
+                    '-y', tmpOut
+                ]);
+                ff.stderr.on('data', () => {});
+                ff.on('close', ffCode => {
+                    if (ffCode === 0 && fs.existsSync(tmpOut)) {
+                        fs.renameSync(tmpOut, outputPath);
+                        console.log('✅ Subtitle merged');
+                    } else {
+                        console.warn(`⚠️ Subtitle merge gagal (code ${ffCode})`);
+                        if (fs.existsSync(tmpOut)) try { fs.unlinkSync(tmpOut); } catch(_) {}
+                    }
+                    try { fs.unlinkSync(subFile); } catch(_) {}
+                    finalize();
+                });
+            } else {
+                finalize();
+            }
 
         } else if (currentProgress[url].phase !== 'cancelled') {
             currentProgress[url].phase = 'done';
