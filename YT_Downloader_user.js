@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTube Downloader
 // @namespace    http://tampermonkey.net/
-// @version      11.21
-// @description  yt-dlp + SSE + Hover + Share Catcher + Virtual Folders + Auto Playlist + Ultimate Clean + Pause/Resume
+// @version      11.22
+// @description  yt-dlp + SSE + Hover + Share Catcher + Virtual Folders + Auto Playlist + Ultimate Clean + Pause/Resume + Trusted Types Fix
 // @match        *://*.youtube.com/*
 // @noframes
 // @grant        GM_xmlhttpRequest
@@ -12,23 +12,20 @@
 (function () {
 'use strict';
 
-// 1. Sistem Anti-Bentrok: Matikan paksa jika ada script versi lain yang mencoba jalan
+// 1. Sistem Anti-Bentrok
 if (window.__ytdl_active_version) return;
-window.__ytdl_active_version = "11.21";
+window.__ytdl_active_version = "11.22";
 
-// 2. Bersihkan elemen lama dari DOM (jika reload tanpa refresh)
+// 2. Bersihkan elemen lama dari DOM
 document.querySelectorAll('#ytdl-fab-container, #ytdl-modal, #ytdl-popup, .ytdl-hover-dl').forEach(el => el.remove());
 
-// FIX: Gunakan http bukan https agar cocok dengan server Express biasa
 const API = 'http://localhost:8989';
 
-// GLOBAL FUNGSI: Mengecek apakah item adalah Shorts
 const checkIsShorts = (item) => {
     if (!item) return false;
     return !!(item.isShorts || (item.sourceUrl && item.sourceUrl.includes('/shorts/')));
 };
 
-// URL NORMALIZER: Membersihkan link kotor dari YouTube Share agar mudah dibaca yt-dlp
 function normalizeYtUrl(rawUrl) {
     if (!rawUrl) return '';
     try {
@@ -48,12 +45,10 @@ function normalizeYtUrl(rawUrl) {
     return rawUrl;
 }
 
-// Variabel Global
 let lastScannedFiles = [];
 window.__ytdlTargetUrl = '';
 window.__ytdlTargetTitle = '';
 
-// Tracker Cadangan: Secara diam-diam merekam link video yang disentuh kursor
 function trackHover(e) {
     const card = e.target.closest('ytd-rich-item-renderer, ytd-video-renderer, ytd-compact-video-renderer, ytd-grid-video-renderer, ytd-reel-item-renderer');
     if (card) {
@@ -65,7 +60,6 @@ function trackHover(e) {
 }
 ['mouseover', 'touchstart', 'focusin'].forEach(evt => document.addEventListener(evt, trackHover, true));
 
-// Proxy Gambar Thumbnail
 function thumbSrc(url) {
     if (!url) return '';
     if (url.startsWith('/') || url.startsWith(API)) return url;
@@ -79,27 +73,39 @@ let libraryMaximized = false;
 let libraryFilter = localStorage.getItem('ytdl_filter') || 'all';
 
 /* ══════════════════════════════════════════════════════
-   CSS
+   CSS — inject via <style> (safe, tidak kena Trusted Types)
 ══════════════════════════════════════════════════════ */
-document.head.appendChild(Object.assign(document.createElement('style'), { textContent: `
+const styleEl = document.createElement('style');
+styleEl.textContent = `
 #ytdl-fab-container {position:fixed;bottom:85px;right:20px;display:flex;flex-direction:column;gap:12px;z-index:999999;}
 .ytdl-fab {width:48px;height:48px;background:#e00;color:#fff;border-radius:10px;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 15px rgba(0,0,0,.5);font-size:20px;border:1px solid rgba(255,255,255,.2);user-select:none;}
 #ytdl-fab-dl {display:none;}
 #ytdl-fab-lib {position:relative;}
 #ytdl-fab-lib .badge {position:absolute;top:-6px;right:-6px;background:#fa0;color:#000;border-radius:50%;width:18px;height:18px;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;}
 
-body.ytdl-hide-share ytd-popup-container > tp-yt-paper-dialog, body.ytdl-hide-share ytd-popup-container > tp-yt-iron-overlay-backdrop, body.ytdl-hide-share iron-overlay-backdrop, body.ytdl-hide-share tp-yt-paper-dialog, body.ytdl-hide-share tp-yt-paper-toast {
-    opacity: 0 !important; visibility: hidden !important; pointer-events: none !important; position: fixed !important; top: -9999px !important; left: -9999px !important; transform: scale(0) !important; z-index: -9999 !important;
+body.ytdl-hide-share ytd-popup-container > tp-yt-paper-dialog,
+body.ytdl-hide-share ytd-popup-container > tp-yt-iron-overlay-backdrop,
+body.ytdl-hide-share iron-overlay-backdrop,
+body.ytdl-hide-share tp-yt-paper-dialog,
+body.ytdl-hide-share tp-yt-paper-toast {
+    opacity: 0 !important; visibility: hidden !important; pointer-events: none !important;
+    position: fixed !important; top: -9999px !important; left: -9999px !important;
+    transform: scale(0) !important; z-index: -9999 !important;
 }
 
 .ytdl-hover-dl {
-    position:absolute; top:8px; right:8px; background:#e00 !important; color:#fff !important; border:1px solid rgba(255,255,255,0.2);
-    border-radius:6px; padding:6px 10px; font-size:12px; font-weight:bold; font-family:"Roboto","Arial",sans-serif; cursor:pointer;
-    z-index:99; opacity:0; transition:opacity 0.2s ease, transform 0.1s ease, background 0.2s; display:flex; align-items:center; gap:5px;
+    position:absolute; top:8px; right:8px; background:#e00 !important; color:#fff !important;
+    border:1px solid rgba(255,255,255,0.2); border-radius:6px; padding:6px 10px; font-size:12px;
+    font-weight:bold; font-family:"Roboto","Arial",sans-serif; cursor:pointer; z-index:99;
+    opacity:0; transition:opacity 0.2s ease, transform 0.1s ease, background 0.2s;
+    display:flex; align-items:center; gap:5px;
 }
 .ytdl-hover-dl:hover { background:#c00 !important; }
 .ytdl-hover-dl:active {transform:scale(0.95);}
-ytd-rich-item-renderer:hover .ytdl-hover-dl, ytd-video-renderer:hover .ytdl-hover-dl, ytd-grid-video-renderer:hover .ytdl-hover-dl, ytd-compact-video-renderer:hover .ytdl-hover-dl { opacity:1; }
+ytd-rich-item-renderer:hover .ytdl-hover-dl,
+ytd-video-renderer:hover .ytdl-hover-dl,
+ytd-grid-video-renderer:hover .ytdl-hover-dl,
+ytd-compact-video-renderer:hover .ytdl-hover-dl { opacity:1; }
 
 #ytdl-popup{display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#181818;color:#fff;padding:22px;border-radius:14px;z-index:10000000;width:340px;box-shadow:0 0 40px rgba(0,0,0,.9);border:1px solid #3a3a3a;text-align:center}
 #ytdl-popup.show{display:block}
@@ -163,18 +169,15 @@ ytd-rich-item-renderer:hover .ytdl-hover-dl, ytd-video-renderer:hover .ytdl-hove
 .dl-foot-btns{display:flex;gap:4px;align-items:center;flex-shrink:0}
 .dl-status{font-size:10px;flex:1}
 
-/* ── TOMBOL PAUSE ── */
 .dl-pause{background:none;border:1px solid #555;color:#fa0;border-radius:5px;padding:3px 10px;font-size:10px;cursor:pointer;transition:all .2s;white-space:nowrap}
 .dl-pause:hover{background:#fa0;border-color:#fa0;color:#000}
 .dl-pause.is-paused{color:#3ea6ff;border-color:#3ea6ff;}
 .dl-pause.is-paused:hover{background:#3ea6ff;border-color:#3ea6ff;color:#fff}
 .dl-pause:disabled{opacity:.4;cursor:not-allowed}
 
-/* ── TOMBOL CANCEL ── */
 .dl-cancel{background:none;border:1px solid #522;color:#f44;border-radius:5px;padding:3px 10px;font-size:10px;cursor:pointer;transition:all .2s;white-space:nowrap}
 .dl-cancel:hover{background:#e00;border-color:#e00;color:#fff}
 
-/* ── STATUS PAUSED ── */
 .dl-paused-label{font-size:10px;color:#fa0;font-style:italic;text-align:center;padding:4px 0;background:rgba(255,170,0,0.08);border-radius:5px;margin-bottom:4px}
 
 .close-ytdl{flex-shrink:0;margin-top:10px;background:#1a1a1a;color:#888;border:1px solid #333;padding:9px 36px;border-radius:20px;cursor:pointer;font-weight:700;align-self:center;transition:all .2s}
@@ -221,7 +224,6 @@ ytd-rich-item-renderer:hover .ytdl-hover-dl, ytd-video-renderer:hover .ytdl-hove
 #h-list.grid .folder-group-body:not(.collapsed), #scan-list.grid .folder-group-body:not(.collapsed) {display:flex; flex-wrap:wrap; gap:10px; padding:2px; align-items:flex-start;}
 #h-list.list .folder-group-body:not(.collapsed), #scan-list.list .folder-group-body:not(.collapsed) {display:flex;flex-direction:column;gap:8px;padding:2px}
 
-/* SHORTS SHELF */
 .shorts-shelf-container { display: flex !important; flex-wrap: nowrap !important; overflow-x: auto !important; gap: 10px; padding: 2px 2px 10px 2px; scroll-behavior: smooth; align-items: center; transition: all 0.2s; }
 .shorts-shelf-container.collapsed { display: none !important; }
 .shorts-shelf-container::-webkit-scrollbar { height: 6px; }
@@ -234,7 +236,6 @@ ytd-rich-item-renderer:hover .ytdl-hover-dl, ytd-video-renderer:hover .ytdl-hove
 .shorts-shelf-container .v-card:hover .cb { opacity: 1 !important; pointer-events: auto !important; }
 .shorts-shelf-container .card-title { white-space: normal !important; display: -webkit-box !important; -webkit-line-clamp: 2 !important; -webkit-box-orient: vertical !important; }
 
-/* NORMAL GRID CARD */
 .v-card{display:flex;background:#111;border-radius:10px;border:1px solid #222;overflow:hidden;position:relative;transition:border-color .2s, transform 0.2s, opacity 0.2s;}
 .v-card:hover{border-color:#555}
 .v-card.is-dragging { opacity: 0.4; transform: scale(0.95); border-color: #e00; }
@@ -259,7 +260,6 @@ ytd-rich-item-renderer:hover .ytdl-hover-dl, ytd-video-renderer:hover .ytdl-hove
 #h-list.grid .card-tags, #scan-list.grid .card-tags{display:flex;gap:4px;flex-wrap:wrap;margin:0 0 7px;align-items:center}
 #h-list.grid .card-acts, #scan-list.grid .card-acts{display:flex;gap:5px}
 
-/* LIST VIEW */
 #h-list.list .v-card, #scan-list.list .v-card{flex-direction:row;align-items:stretch;min-height:90px;height:90px;overflow:hidden}
 #h-list.list .thumb-wrap, #scan-list.list .thumb-wrap{position:relative;width:130px;min-width:130px;height:90px;flex-shrink:0;background:#0a0a0a;overflow:hidden}
 #h-list.list .thumb-wrap img, #scan-list.list .thumb-wrap img{width:100%;height:100%;object-fit:cover;display:block}
@@ -310,97 +310,149 @@ ytd-rich-item-renderer:hover .ytdl-hover-dl, ytd-video-renderer:hover .ytdl-hove
 .scan-stats{font-size:10px;color:#555;flex:1}
 .sc-empty{color:#333;font-size:13px;text-align:center;margin-top:40px}
 .ytdl-menu-item:hover { background-color: rgba(255, 255, 255, 0.1) !important; }
-` }));
+`;
+document.head.appendChild(styleEl);
 
 /* ══════════════════════════════════════════════════════
-   MODAL & UI HTML
+   BUILD UI — Trusted Types safe: semua via createElement
 ══════════════════════════════════════════════════════ */
-document.body.insertAdjacentHTML('beforeend', `
-<div id="ytdl-modal">
-<div id="ytdl-inner">
-<div class="main-p" id="main-p">
-<div class="scale-row">
-<span>🔍 Scale</span>
-<input type="range" id="scale-sl" min="0.6" max="1.4" step="0.05" value="${uiScale}">
-<span class="scale-val" id="scale-lbl">${Math.round(uiScale*100)}%</span>
-</div>
-<div id="player-toggle-bar">
-<span class="ptb-icon" id="ptb-icon">▼</span>
-<span class="ptb-title" id="ptb-title">Player</span>
-<span class="ptb-badge" id="ptb-badge">Idle</span>
-</div>
-<div id="player-wrap">
-<p id="p-title">Library & Player</p>
-<video id="v-player" controls></video>
-<div class="sub-toggle-row" id="sub-toggle-row" style="display:none">
-  💬 <label for="sub-track-sel">Subtitle:</label>
-  <select id="sub-track-sel"><option value="">— Nonaktif —</option></select>
-  <span class="sub-on-badge" id="sub-on-badge" style="display:none">ON</span>
-</div>
-</div>
-<div id="dl-panel"><p class="dl-empty">Tidak ada unduhan aktif</p></div>
-<button id="close-ytdl">✕ TUTUP</button>
-</div>
-<div class="side-p">
-<div class="lib-tabs">
-<button class="lib-tab active" id="tab-hist">📁 Library</button>
-<button class="lib-tab" id="tab-scan">🔍 Scan Folder</button>
-</div>
+function el(tag, props = {}, children = []) {
+    const e = document.createElement(tag);
+    Object.entries(props).forEach(([k, v]) => {
+        if (k === 'class') e.className = v;
+        else if (k === 'style') e.style.cssText = v;
+        else if (k === 'textContent') e.textContent = v;
+        else e.setAttribute(k, v);
+    });
+    children.forEach(c => { if (c) e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); });
+    return e;
+}
 
-<div class="filter-row">
-<button class="filter-btn ${libraryFilter==='all'?'active':''}" data-filter="all">🎬 Semua</button>
-<button class="filter-btn ${libraryFilter==='video'?'active':''}" data-filter="video">📹 Video</button>
-<button class="filter-btn ${libraryFilter==='shorts'?'active':''}" data-filter="shorts">📱 Shorts</button>
-</div>
+// Helper: set innerHTML hanya untuk container yang belum di-attach ke DOM
+function safeSetInner(container, htmlString) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = htmlString;
+    container.innerHTML = '';
+    while (tmp.firstChild) container.appendChild(tmp.firstChild);
+}
 
-<div id="hist-panel">
-<div class="lib-hdr">
-<h3>Library</h3>
-<button class="vbtn" id="btn-create-folder" title="Buat Folder Virtual Baru" style="margin-right:auto; padding:5px 8px;"><span class="vbtn-txt">📁+</span></button>
-<button class="vbtn ${libraryView==='grid'?'active':''}" id="hbtn-grid">⊞</button>
-<button class="vbtn ${libraryView==='list'?'active':''}" id="hbtn-list">≡</button>
-<button class="maximize-btn" id="maximize-btn" title="Perluas Library">⤢</button>
-</div>
-<div id="h-list" class="${libraryView}"></div>
-</div>
-<div id="scan-panel">
-<div class="folder-list" id="folder-list"></div>
-<div class="add-row">
-<input id="folder-input" placeholder="Path folder, mis: /home/user/Videos">
-<button class="sbtn" id="folder-add-btn">+ Tambah</button>
-</div>
-<div class="scan-bar">
-<button class="sbtn red" id="scan-btn">🔍 Scan Sekarang</button>
-<span class="scan-stats" id="scan-stats"></span>
-<button class="vbtn ${libraryView==='grid'?'active':''}" id="sbtn-grid">⊞</button>
-<button class="vbtn ${libraryView==='list'?'active':''}" id="sbtn-list">≡</button>
-</div>
-<div id="scan-list" class="${libraryView}"><p class="sc-empty">Klik "Scan Sekarang" untuk memindai.</p></div>
-</div>
+// ── MODAL ──────────────────────────────────────────────────────────────────
+const modal = el('div', { id: 'ytdl-modal' });
 
-</div>
-</div>
-</div>
+const inner = el('div', { id: 'ytdl-inner' });
 
-<div id="ytdl-popup">
-<h3>⬇ Pilih Kualitas / Mode</h3>
-<p class="sub" id="popup-title"></p>
-<div id="playlist-inject-zone"></div>
-<div id="q-list" class="q-grid"></div>
-<button id="popup-cancel" style="margin-top:14px;background:none;border:none;color:#555;cursor:pointer;font-size:13px">Batal</button>
-</div>
+// LEFT: main panel
+const mainP = el('div', { class: 'main-p', id: 'main-p' });
 
-<div id="ytdl-fab-container">
-    <div id="ytdl-fab-dl" class="ytdl-fab" title="Download Current Video">⬇</div>
-    <div id="ytdl-fab-lib" class="ytdl-fab" title="Open Library">📂</div>
-</div>
-`);
+const scaleRow = el('div', { class: 'scale-row' });
+scaleRow.appendChild(el('span', { textContent: '🔍 Scale' }));
+const scaleSlider = el('input', { type: 'range', id: 'scale-sl', min: '0.6', max: '1.4', step: '0.05', value: String(uiScale) });
+scaleRow.appendChild(scaleSlider);
+const scaleLbl = el('span', { class: 'scale-val', id: 'scale-lbl', textContent: Math.round(uiScale * 100) + '%' });
+scaleRow.appendChild(scaleLbl);
+mainP.appendChild(scaleRow);
 
-const modal  = document.getElementById('ytdl-modal');
-const popup  = document.getElementById('ytdl-popup');
-const fabLib = document.getElementById('ytdl-fab-lib');
-const fabDl  = document.getElementById('ytdl-fab-dl');
-const player = document.getElementById('v-player');
+const ptBar = el('div', { id: 'player-toggle-bar' });
+const ptbIcon = el('span', { class: 'ptb-icon', id: 'ptb-icon', textContent: '▼' });
+const ptbTitle = el('span', { class: 'ptb-title', id: 'ptb-title', textContent: 'Player' });
+const ptbBadge = el('span', { class: 'ptb-badge', id: 'ptb-badge', textContent: 'Idle' });
+ptBar.appendChild(ptbIcon); ptBar.appendChild(ptbTitle); ptBar.appendChild(ptbBadge);
+mainP.appendChild(ptBar);
+
+const playerWrap = el('div', { id: 'player-wrap' });
+const pTitle = el('p', { id: 'p-title', textContent: 'Library & Player' });
+const vPlayer = el('video', { id: 'v-player', controls: '' });
+const subToggleRow = el('div', { class: 'sub-toggle-row', id: 'sub-toggle-row', style: 'display:none' });
+subToggleRow.appendChild(document.createTextNode('💬 '));
+const subLabel = el('label', {}); subLabel.setAttribute('for', 'sub-track-sel'); subLabel.textContent = 'Subtitle:';
+const subSel = el('select', { id: 'sub-track-sel' });
+subSel.appendChild(el('option', { value: '' }, ['— Nonaktif —']));
+const subOnBadge = el('span', { class: 'sub-on-badge', id: 'sub-on-badge', style: 'display:none', textContent: 'ON' });
+subToggleRow.appendChild(subLabel); subToggleRow.appendChild(subSel); subToggleRow.appendChild(subOnBadge);
+playerWrap.appendChild(pTitle); playerWrap.appendChild(vPlayer); playerWrap.appendChild(subToggleRow);
+mainP.appendChild(playerWrap);
+
+const dlPanel = el('div', { id: 'dl-panel' });
+dlPanel.appendChild(el('p', { class: 'dl-empty', textContent: 'Tidak ada unduhan aktif' }));
+mainP.appendChild(dlPanel);
+
+const closeBtn = el('button', { id: 'close-ytdl', textContent: '✕ TUTUP' });
+mainP.appendChild(closeBtn);
+inner.appendChild(mainP);
+
+// RIGHT: side panel
+const sideP = el('div', { class: 'side-p' });
+
+const libTabs = el('div', { class: 'lib-tabs' });
+const tabHist = el('button', { class: 'lib-tab active', id: 'tab-hist', textContent: '📁 Library' });
+const tabScan = el('button', { class: 'lib-tab', id: 'tab-scan', textContent: '🔍 Scan Folder' });
+libTabs.appendChild(tabHist); libTabs.appendChild(tabScan);
+sideP.appendChild(libTabs);
+
+const filterRow = el('div', { class: 'filter-row' });
+[['all','🎬 Semua'],['video','📹 Video'],['shorts','📱 Shorts']].forEach(([f, label]) => {
+    const btn = el('button', { class: 'filter-btn' + (libraryFilter === f ? ' active' : ''), 'data-filter': f, textContent: label });
+    filterRow.appendChild(btn);
+});
+sideP.appendChild(filterRow);
+
+// HIST PANEL
+const histPanel = el('div', { id: 'hist-panel' });
+const libHdr = el('div', { class: 'lib-hdr' });
+const libHdrH3 = el('h3', { textContent: 'Library' });
+const btnCreateFolder = el('button', { class: 'vbtn', id: 'btn-create-folder', title: 'Buat Folder Virtual Baru', style: 'margin-right:auto; padding:5px 8px;' });
+btnCreateFolder.appendChild(el('span', { class: 'vbtn-txt', textContent: '📁+' }));
+const hbtnGrid = el('button', { class: 'vbtn' + (libraryView==='grid'?' active':''), id: 'hbtn-grid', textContent: '⊞' });
+const hbtnList = el('button', { class: 'vbtn' + (libraryView==='list'?' active':''), id: 'hbtn-list', textContent: '≡' });
+const maximizeBtn = el('button', { class: 'maximize-btn', id: 'maximize-btn', title: 'Perluas Library', textContent: '⤢' });
+libHdr.appendChild(libHdrH3); libHdr.appendChild(btnCreateFolder);
+libHdr.appendChild(hbtnGrid); libHdr.appendChild(hbtnList); libHdr.appendChild(maximizeBtn);
+histPanel.appendChild(libHdr);
+const hList = el('div', { id: 'h-list', class: libraryView });
+histPanel.appendChild(hList);
+sideP.appendChild(histPanel);
+
+// SCAN PANEL
+const scanPanel = el('div', { id: 'scan-panel' });
+const folderListEl = el('div', { class: 'folder-list', id: 'folder-list' });
+const addRow = el('div', { class: 'add-row' });
+const folderInput = el('input', { id: 'folder-input', placeholder: 'Path folder, mis: /home/user/Videos' });
+const folderAddBtn = el('button', { class: 'sbtn', id: 'folder-add-btn', textContent: '+ Tambah' });
+addRow.appendChild(folderInput); addRow.appendChild(folderAddBtn);
+const scanBar = el('div', { class: 'scan-bar' });
+const scanBtn2 = el('button', { class: 'sbtn red', id: 'scan-btn', textContent: '🔍 Scan Sekarang' });
+const scanStats = el('span', { class: 'scan-stats', id: 'scan-stats' });
+const sbtnGrid = el('button', { class: 'vbtn' + (libraryView==='grid'?' active':''), id: 'sbtn-grid', textContent: '⊞' });
+const sbtnList = el('button', { class: 'vbtn' + (libraryView==='list'?' active':''), id: 'sbtn-list', textContent: '≡' });
+scanBar.appendChild(scanBtn2); scanBar.appendChild(scanStats); scanBar.appendChild(sbtnGrid); scanBar.appendChild(sbtnList);
+const scanList = el('div', { id: 'scan-list', class: libraryView });
+scanList.appendChild(el('p', { class: 'sc-empty', textContent: 'Klik "Scan Sekarang" untuk memindai.' }));
+scanPanel.appendChild(folderListEl); scanPanel.appendChild(addRow); scanPanel.appendChild(scanBar); scanPanel.appendChild(scanList);
+sideP.appendChild(scanPanel);
+
+inner.appendChild(sideP);
+modal.appendChild(inner);
+document.body.appendChild(modal);
+
+// ── POPUP ──────────────────────────────────────────────────────────────────
+const popup = el('div', { id: 'ytdl-popup' });
+const popupH3 = el('h3', { textContent: '⬇ Pilih Kualitas / Mode' });
+const popupSub = el('p', { class: 'sub', id: 'popup-title' });
+const plInjectZone = el('div', { id: 'playlist-inject-zone' });
+const qList = el('div', { id: 'q-list', class: 'q-grid' });
+const popupCancel = el('button', { id: 'popup-cancel', style: 'margin-top:14px;background:none;border:none;color:#555;cursor:pointer;font-size:13px', textContent: 'Batal' });
+popup.appendChild(popupH3); popup.appendChild(popupSub);
+popup.appendChild(plInjectZone); popup.appendChild(qList); popup.appendChild(popupCancel);
+document.body.appendChild(popup);
+
+// ── FAB ────────────────────────────────────────────────────────────────────
+const fabContainer = el('div', { id: 'ytdl-fab-container' });
+const fabDl  = el('div', { id: 'ytdl-fab-dl',  class: 'ytdl-fab', title: 'Download Current Video',  textContent: '⬇' });
+const fabLib = el('div', { id: 'ytdl-fab-lib', class: 'ytdl-fab', title: 'Open Library', textContent: '📂' });
+fabContainer.appendChild(fabDl); fabContainer.appendChild(fabLib);
+document.body.appendChild(fabContainer);
+
+const player = vPlayer;
 
 /* ══════════════════════════════════════════════════════
    LOGIKA CREATE FOLDER
@@ -433,7 +485,7 @@ function checkFabVisibility() {
 checkFabVisibility();
 
 /* ══════════════════════════════════════════════════════
-   INJEKSI TOMBOL HOVER DI BERANDA (THUMBNAIL VIDEO)
+   INJEKSI TOMBOL HOVER DI BERANDA
 ══════════════════════════════════════════════════════ */
 const hoverObserver = new MutationObserver(() => {
     const thumbnails = document.querySelectorAll('ytd-thumbnail:not([data-ytdl-hover-injected])');
@@ -442,20 +494,29 @@ const hoverObserver = new MutationObserver(() => {
 
         const btn = document.createElement('button');
         btn.className = 'ytdl-hover-dl';
-        btn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z"/></svg> Download`;
         btn.title = 'Download video ini';
+
+        // SVG icon
+        const svgNS = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(svgNS, 'svg');
+        svg.setAttribute('viewBox', '0 0 24 24');
+        svg.setAttribute('width', '14'); svg.setAttribute('height', '14');
+        svg.setAttribute('fill', 'currentColor');
+        const pathEl = document.createElementNS(svgNS, 'path');
+        pathEl.setAttribute('d', 'M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z');
+        svg.appendChild(pathEl);
+        btn.appendChild(svg);
+        btn.appendChild(document.createTextNode(' Download'));
 
         btn.onclick = (e) => {
             e.preventDefault(); e.stopPropagation();
             const renderer = thumb.closest('ytd-rich-item-renderer, ytd-video-renderer, ytd-grid-video-renderer, ytd-compact-video-renderer, ytd-reel-item-renderer, ytd-playlist-video-renderer');
             if (!renderer) return;
-
             const a = renderer.querySelector('a#thumbnail');
             if (!a) return;
             const url = normalizeYtUrl(a.href);
             const titleEl = renderer.querySelector('#video-title, .ytd-reel-item-renderer #video-title');
             const title = titleEl ? titleEl.textContent.trim() : '';
-
             openQualityPopup(url, title, url.includes('/shorts/'));
         };
         thumb.appendChild(btn);
@@ -464,11 +525,10 @@ const hoverObserver = new MutationObserver(() => {
 hoverObserver.observe(document.body, { childList: true, subtree: true });
 
 /* ══════════════════════════════════════════════════════
-   INJEKSI MENU TITIK TIGA (PENANGKAP LINK SHARE)
+   INJEKSI MENU TITIK TIGA
 ══════════════════════════════════════════════════════ */
 const menuObserver = new MutationObserver(() => {
     const menuLists = document.querySelectorAll('yt-list-view-model[role="listbox"]:not([data-ytdl-menu-injected])');
-
     menuLists.forEach(menuList => {
         menuList.setAttribute('data-ytdl-menu-injected', '1');
 
@@ -477,28 +537,32 @@ const menuObserver = new MutationObserver(() => {
         menuItem.setAttribute('role', 'menuitem');
         menuItem.style.cursor = 'pointer';
 
-        menuItem.innerHTML = `
-            <div class="yt-list-item-view-model__label yt-list-item-view-model__container yt-list-item-view-model__container--compact yt-list-item-view-model__container--tappable yt-list-item-view-model__container--in-popup">
-                <div aria-hidden="true" class="yt-list-item-view-model__image-container yt-list-item-view-model__leading">
-                    <span class="ytIconWrapperHost yt-list-item-view-model__accessory yt-list-item-view-model__image" role="img" aria-hidden="true">
-                        <span class="yt-icon-shape ytSpecIconShapeHost">
-                            <div style="width: 100%; height: 100%; display: block; fill: #e00;">
-                                <svg xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 0 24 24" width="24" focusable="false" aria-hidden="true" style="pointer-events: none; display: inherit; width: 100%; height: 100%;">
-                                    <path d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z"></path>
-                                </svg>
-                            </div>
-                        </span>
-                    </span>
-                </div>
-                <button class="ytButtonOrAnchorHost ytButtonOrAnchorButton yt-list-item-view-model__button-or-anchor" style="cursor: pointer;">
-                    <div class="yt-list-item-view-model__text-wrapper">
-                        <div class="yt-list-item-view-model__title-wrapper">
-                            <span class="yt-core-attributed-string yt-list-item-view-model__title yt-core-attributed-string--white-space-pre-wrap" role="text" style="color: #e00; font-weight: bold;">Download</span>
-                        </div>
-                    </div>
-                </button>
-            </div>
-        `;
+        // Build structure manually (Trusted Types safe)
+        const outerDiv = el('div', { class: 'yt-list-item-view-model__label yt-list-item-view-model__container yt-list-item-view-model__container--compact yt-list-item-view-model__container--tappable yt-list-item-view-model__container--in-popup' });
+
+        const imgContainer = el('div', { 'aria-hidden': 'true', class: 'yt-list-item-view-model__image-container yt-list-item-view-model__leading' });
+        const iconWrap = el('span', { class: 'ytIconWrapperHost yt-list-item-view-model__accessory yt-list-item-view-model__image', role: 'img', 'aria-hidden': 'true' });
+        const iconShape = el('span', { class: 'yt-icon-shape ytSpecIconShapeHost' });
+        const svgWrap = el('div', { style: 'width:100%;height:100%;display:block;fill:#e00;' });
+        const svgNS = 'http://www.w3.org/2000/svg';
+        const menuSvg = document.createElementNS(svgNS, 'svg');
+        menuSvg.setAttribute('xmlns', svgNS);
+        menuSvg.setAttribute('height', '24'); menuSvg.setAttribute('viewBox', '0 0 24 24'); menuSvg.setAttribute('width', '24');
+        menuSvg.setAttribute('focusable', 'false'); menuSvg.setAttribute('aria-hidden', 'true');
+        menuSvg.style.cssText = 'pointer-events:none;display:inherit;width:100%;height:100%';
+        const menuPath = document.createElementNS(svgNS, 'path');
+        menuPath.setAttribute('d', 'M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z');
+        menuSvg.appendChild(menuPath);
+        svgWrap.appendChild(menuSvg); iconShape.appendChild(svgWrap); iconWrap.appendChild(iconShape); imgContainer.appendChild(iconWrap);
+
+        const btnAnchor = el('button', { class: 'ytButtonOrAnchorHost ytButtonOrAnchorButton yt-list-item-view-model__button-or-anchor', style: 'cursor:pointer;' });
+        const txtWrap = el('div', { class: 'yt-list-item-view-model__text-wrapper' });
+        const titleWrap = el('div', { class: 'yt-list-item-view-model__title-wrapper' });
+        const titleSpan = el('span', { class: 'yt-core-attributed-string yt-list-item-view-model__title yt-core-attributed-string--white-space-pre-wrap', role: 'text', style: 'color:#e00;font-weight:bold;', textContent: 'Download' });
+        titleWrap.appendChild(titleSpan); txtWrap.appendChild(titleWrap); btnAnchor.appendChild(txtWrap);
+
+        outerDiv.appendChild(imgContainer); outerDiv.appendChild(btnAnchor);
+        menuItem.appendChild(outerDiv);
 
         menuItem.onclick = (e) => {
             e.stopPropagation();
@@ -511,19 +575,16 @@ const menuObserver = new MutationObserver(() => {
             if (shareItem) {
                 document.body.classList.add('ytdl-hide-share');
                 const shareBtn = shareItem.querySelector('button');
-                if (shareBtn) shareBtn.click();
-                else shareItem.click();
+                if (shareBtn) shareBtn.click(); else shareItem.click();
 
                 let checkCount = 0;
                 const checkShare = setInterval(() => {
                     checkCount++;
                     const shareInput = document.querySelector('#share-url');
-
                     if (shareInput && shareInput.value) {
                         clearInterval(checkShare);
                         const rawVideoUrl = shareInput.value;
                         const videoUrl = normalizeYtUrl(rawVideoUrl);
-
                         const titleEl = document.querySelector('yt-share-target-renderer #title');
                         const title = titleEl ? titleEl.textContent.trim() : window.__ytdlTargetTitle;
 
@@ -563,10 +624,10 @@ const menuObserver = new MutationObserver(() => {
 
         const itemsList = menuList.querySelectorAll('yt-list-item-view-model');
         if (itemsList.length > 0) {
-             const insertIndex = itemsList.length > 2 ? itemsList.length - 2 : itemsList.length - 1;
-             menuList.insertBefore(menuItem, itemsList[insertIndex]);
+            const insertIndex = itemsList.length > 2 ? itemsList.length - 2 : itemsList.length - 1;
+            menuList.insertBefore(menuItem, itemsList[insertIndex]);
         } else {
-             menuList.appendChild(menuItem);
+            menuList.appendChild(menuItem);
         }
     });
 });
@@ -575,17 +636,15 @@ menuObserver.observe(document.body, { childList: true, subtree: true });
 /* ══════════════════════════════════════════════════════
    MAXIMIZE / MINIMIZE LIBRARY
 ══════════════════════════════════════════════════════ */
-const maximizeBtn = document.getElementById('maximize-btn');
-const sidePanel   = document.querySelector('.side-p');
-maximizeBtn.onclick = () => {
+document.getElementById('maximize-btn').onclick = () => {
     libraryMaximized = !libraryMaximized;
-    sidePanel.classList.toggle('lib-maximized', libraryMaximized);
+    sideP.classList.toggle('lib-maximized', libraryMaximized);
     maximizeBtn.textContent = libraryMaximized ? '⤡' : '⤢';
     maximizeBtn.title = libraryMaximized ? 'Kembalikan ukuran' : 'Perluas Library';
 };
 
 /* ══════════════════════════════════════════════════════
-   UI SCALES & FILTER
+   FILTER & SCALE
 ══════════════════════════════════════════════════════ */
 document.querySelectorAll('.filter-btn').forEach(btn => {
     btn.onclick = () => {
@@ -599,10 +658,10 @@ document.querySelectorAll('.filter-btn').forEach(btn => {
 
 let playerVisible = localStorage.getItem('ytdl_player') !== 'hidden';
 function applyPlayerVisibility() {
-    const mainP = document.getElementById('main-p');
-    const wrap  = document.getElementById('player-wrap');
-    const icon  = document.getElementById('ptb-icon');
-    mainP.classList.toggle('player-hidden', !playerVisible);
+    const mainPEl = document.getElementById('main-p');
+    const wrap    = document.getElementById('player-wrap');
+    const icon    = document.getElementById('ptb-icon');
+    mainPEl.classList.toggle('player-hidden', !playerVisible);
     icon.classList.toggle('collapsed', !playerVisible);
     wrap.style.overflow = 'hidden';
     if (!playerVisible) {
@@ -638,10 +697,10 @@ function updateToggleBar(nowPlayingTitle, activeCount) {
 updateToggleBar('', 0);
 
 function applyScale() {
-    const inner = document.getElementById('ytdl-inner');
-    inner.style.transform = `scale(${uiScale})`;
-    inner.style.width  = `${100/uiScale}%`;
-    inner.style.height = `${100/uiScale}%`;
+    const innerEl = document.getElementById('ytdl-inner');
+    innerEl.style.transform = `scale(${uiScale})`;
+    innerEl.style.width  = `${100/uiScale}%`;
+    innerEl.style.height = `${100/uiScale}%`;
 }
 applyScale();
 document.getElementById('scale-sl').oninput = function() {
@@ -697,20 +756,31 @@ _w.__ytdlSSE.onmessage = (e) => {
     const data = JSON.parse(e.data);
     _w.__ytdlProg = data;
     const n = Object.keys(data).length;
-    fabLib.innerHTML = n > 0 ? `⏳<span class="badge">${n}</span>` : '📂';
+    if (n > 0) {
+        fabLib.textContent = '';
+        fabLib.appendChild(document.createTextNode('⏳'));
+        const badge = el('span', { class: 'badge', textContent: String(n) });
+        fabLib.appendChild(badge);
+    } else {
+        fabLib.textContent = '📂';
+    }
     renderDlPanel(data);
     const playing = player.src && !player.paused ? document.getElementById('p-title')?.textContent : '';
     updateToggleBar(playing || '', n);
 };
 
 /* ══════════════════════════════════════════════════════
-   ACTIVE DOWNLOAD PANEL (dengan tombol Pause/Resume)
+   ACTIVE DOWNLOAD PANEL
 ══════════════════════════════════════════════════════ */
 function renderDlPanel(data) {
     const panel = document.getElementById('dl-panel');
     if (!panel) return;
     const entries = Object.entries(data);
-    if (entries.length === 0) { panel.innerHTML = '<p class="dl-empty">Tidak ada unduhan aktif</p>'; return; }
+    if (entries.length === 0) {
+        panel.innerHTML = '';
+        panel.appendChild(el('p', { class: 'dl-empty', textContent: 'Tidak ada unduhan aktif' }));
+        return;
+    }
 
     entries.forEach(([url, info]) => {
         let card = panel.querySelector(`[data-url="${CSS.escape(url)}"]`);
@@ -731,14 +801,13 @@ function renderDlPanel(data) {
         const qual     = info.quality || '';
         const fsz      = info.filesize ? `💾 ${info.filesize}` : '';
         const thumb    = info.thumbnail || '';
-        const hasSub   = !!info.subtitle_lang;
 
-        const done       = phase === 'done';
-        const merging    = phase === 'merging';
-        const cancelled  = phase === 'cancelled';
-        const subMerge   = phase === 'subtitle';
-        const subDl      = phase === 'subtitle_dl';
-        const active     = !done && !merging && !cancelled && !subMerge;
+        const done      = phase === 'done';
+        const merging   = phase === 'merging';
+        const cancelled = phase === 'cancelled';
+        const subMerge  = phase === 'subtitle';
+        const subDl     = phase === 'subtitle_dl';
+        const active    = !done && !merging && !cancelled && !subMerge;
 
         const videoActive = phase === 'video';
         const audioActive = phase === 'audio' || phase === 'subtitle_dl';
@@ -752,50 +821,45 @@ function renderDlPanel(data) {
         const aDim = audioActive ? '' : (ap >= 100 ? 'opacity:0.45;' : 'opacity:0.2;');
         const pauseDim = isPaused ? 'opacity:0.4;' : '';
 
-        const buildBars = () => `
-            <div class="dl-row">
-                <span style="${vDim}${pauseDim}">🎬 Video <b>${vp.toFixed(1)}%</b></span>
-                <span class="spd">${videoActive && !isPaused ? spd : ''}</span>
-            </div>
+        // Build card HTML safely
+        const htmlParts = [];
+        htmlParts.push(`<div class="dl-hdr">`);
+        if (thumb) htmlParts.push(`<img src="${thumbSrc(thumb)}" onerror="this.style.display='none'">`);
+        htmlParts.push(`<div class="dl-hdr-text">${title}</div>`);
+        if (qual) htmlParts.push(`<span class="dl-badge">${qual}</span>`);
+        htmlParts.push(`</div>`);
+        if (isPaused) htmlParts.push(`<div class="dl-paused-label">⏸ Dijeda</div>`);
+
+        const bars = `
+            <div class="dl-row"><span style="${vDim}${pauseDim}">🎬 Video <b>${vp.toFixed(1)}%</b></span><span class="spd">${videoActive && !isPaused ? spd : ''}</span></div>
             <div class="pbar" style="${vDim}${pauseDim}"><div class="pbar-fill pbar-v" style="width:${vp}%"></div></div>
-            <div class="dl-row">
-                <span style="${aDim}${pauseDim}">🔊 Audio <b>${ap.toFixed(1)}%</b></span>
-                <span class="eta">${audioActive && !isPaused ? eta : ''}</span>
-            </div>
+            <div class="dl-row"><span style="${aDim}${pauseDim}">🔊 Audio <b>${ap.toFixed(1)}%</b></span><span class="eta">${audioActive && !isPaused ? eta : ''}</span></div>
             <div class="pbar" style="${aDim}${pauseDim}"><div class="pbar-fill pbar-a" style="width:${ap}%"></div></div>
-            ${subDl ? `<div class="dl-row"><span style="color:#a0f">💬 Subtitle <b>${sp.toFixed(1)}%</b></span></div>
-            <div class="pbar"><div class="pbar-fill pbar-s" style="width:${sp}%"></div></div>` : ''}
+            ${subDl ? `<div class="dl-row"><span style="color:#a0f">💬 Subtitle <b>${sp.toFixed(1)}%</b></span></div><div class="pbar"><div class="pbar-fill pbar-s" style="width:${sp}%"></div></div>` : ''}
         `;
 
-        card.innerHTML = `
-            <div class="dl-hdr">
-                ${thumb ? `<img src="${thumbSrc(thumb)}" onerror="this.style.display='none'">` : ''}
-                <div class="dl-hdr-text">${title}</div>
-                ${qual ? `<span class="dl-badge">${qual}</span>` : ''}
-            </div>
-            ${isPaused ? `<div class="dl-paused-label">⏸ Dijeda</div>` : ''}
-            ${cancelled  ? `<p style="text-align:center;color:#f44;font-size:11px;margin:4px 0">❌ Dibatalkan</p>` :
-              done       ? `<div class="dl-row"><span style="color:#0c6">✅ Selesai</span><span>${fsz}</span></div>
-                            <div class="pbar"><div class="pbar-fill pbar-v" style="width:100%"></div></div>` :
-              subMerge   ? `${buildBars()}
-                            <div class="dl-row"><span style="color:#a0f">💬 Menyisipkan subtitle ke file...</span></div>
-                            <div class="pbar"><div class="pbar-fill pbar-s" style="width:100%"></div></div>` :
-              merging    ? `${buildBars()}
-                            <div class="dl-row"><span style="color:#fa0">🔀 Menggabungkan...</span></div>
-                            <div class="pbar"><div class="pbar-fill pbar-m" style="width:100%"></div></div>` :
-                           buildBars()}
-            <div class="dl-foot">
-                <span class="dl-status" style="color:${statusColor}">${!done && !cancelled ? statusText : ''}</span>
-                <span>${done || cancelled ? fsz : ''}</span>
-                ${active ? `
-                <div class="dl-foot-btns">
-                    <button class="dl-pause ${isPaused ? 'is-paused' : ''}" data-url="${url}" data-paused="${isPaused ? 'true' : 'false'}">${isPaused ? '▶ Lanjutkan' : '⏸ Jeda'}</button>
-                    <button class="dl-cancel" data-url="${url}">✕ Batalkan</button>
-                </div>` : ''}
-            </div>
-        `;
+        if (cancelled) {
+            htmlParts.push(`<p style="text-align:center;color:#f44;font-size:11px;margin:4px 0">❌ Dibatalkan</p>`);
+        } else if (done) {
+            htmlParts.push(`<div class="dl-row"><span style="color:#0c6">✅ Selesai</span><span>${fsz}</span></div><div class="pbar"><div class="pbar-fill pbar-v" style="width:100%"></div></div>`);
+        } else if (subMerge) {
+            htmlParts.push(bars);
+            htmlParts.push(`<div class="dl-row"><span style="color:#a0f">💬 Menyisipkan subtitle ke file...</span></div><div class="pbar"><div class="pbar-fill pbar-s" style="width:100%"></div></div>`);
+        } else if (merging) {
+            htmlParts.push(bars);
+            htmlParts.push(`<div class="dl-row"><span style="color:#fa0">🔀 Menggabungkan...</span></div><div class="pbar"><div class="pbar-fill pbar-m" style="width:100%"></div></div>`);
+        } else {
+            htmlParts.push(bars);
+        }
 
-        // Handler tombol CANCEL
+        htmlParts.push(`<div class="dl-foot"><span class="dl-status" style="color:${statusColor}">${!done && !cancelled ? statusText : ''}</span><span>${done || cancelled ? fsz : ''}</span>`);
+        if (active) {
+            htmlParts.push(`<div class="dl-foot-btns"><button class="dl-pause ${isPaused ? 'is-paused' : ''}" data-url="${url}" data-paused="${isPaused}">${isPaused ? '▶ Lanjutkan' : '⏸ Jeda'}</button><button class="dl-cancel" data-url="${url}">✕ Batalkan</button></div>`);
+        }
+        htmlParts.push(`</div>`);
+
+        safeSetInner(card, htmlParts.join(''));
+
         const cancelBtn = card.querySelector('.dl-cancel');
         if (cancelBtn) {
             cancelBtn.onclick = function() {
@@ -805,7 +869,6 @@ function renderDlPanel(data) {
             };
         }
 
-        // ── Handler tombol PAUSE / RESUME ──────────────────────
         const pauseBtn = card.querySelector('.dl-pause');
         if (pauseBtn) {
             pauseBtn.onclick = function() {
@@ -813,42 +876,28 @@ function renderDlPanel(data) {
                 this.disabled = true;
                 const wasPaused = this.dataset.paused === 'true';
                 this.textContent = wasPaused ? '⏳ Melanjutkan...' : '⏳ Menjeda...';
-
                 GM_xmlhttpRequest({
-                    method: 'POST',
-                    url: `${API}/api/pause`,
-                    headers: { 'Content-Type': 'application/json' },
+                    method: 'POST', url: `${API}/api/pause`, headers: { 'Content-Type': 'application/json' },
                     data: JSON.stringify({ url: btnUrl }),
                     onload: (res) => {
                         try {
                             const r = JSON.parse(res.responseText);
-                            // Update local progress state so UI updates immediately
-                            if (_w.__ytdlProg && _w.__ytdlProg[btnUrl]) {
-                                _w.__ytdlProg[btnUrl].paused = r.paused;
-                            }
+                            if (_w.__ytdlProg && _w.__ytdlProg[btnUrl]) _w.__ytdlProg[btnUrl].paused = r.paused;
                             renderDlPanel(_w.__ytdlProg || {});
-                        } catch(_) {
-                            // Fallback: just re-enable button
-                            this.disabled = false;
-                            this.textContent = wasPaused ? '▶ Lanjutkan' : '⏸ Jeda';
-                        }
+                        } catch(_) { this.disabled = false; this.textContent = wasPaused ? '▶ Lanjutkan' : '⏸ Jeda'; }
                     },
-                    onerror: () => {
-                        this.disabled = false;
-                        this.textContent = wasPaused ? '▶ Lanjutkan' : '⏸ Jeda';
-                        console.error('[YTDL] Gagal menghubungi /api/pause');
-                    }
+                    onerror: () => { this.disabled = false; this.textContent = wasPaused ? '▶ Lanjutkan' : '⏸ Jeda'; }
                 });
             };
         }
-        // ────────────────────────────────────────────────────────
     });
 
     panel.querySelectorAll('.dl-card').forEach(c => { if (!data[c.getAttribute('data-url')]) c.remove(); });
 }
 
 function pathToStreamKey(fullPath) {
-    const bytes = new TextEncoder().encode(fullPath); let binary = ''; bytes.forEach(b => binary += String.fromCharCode(b));
+    const bytes = new TextEncoder().encode(fullPath); let binary = '';
+    bytes.forEach(b => binary += String.fromCharCode(b));
     return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
@@ -862,18 +911,16 @@ function playFile(fileName, folderPath, title) {
     if (!playerVisible) { playerVisible = true; localStorage.setItem('ytdl_player', 'visible'); applyPlayerVisibility(); }
     updateToggleBar(title || fileName, Object.keys(_w.__ytdlProg || {}).length);
 
-    // Reset subtitle UI
     const toggleRow = document.getElementById('sub-toggle-row');
     const sel       = document.getElementById('sub-track-sel');
     const badge     = document.getElementById('sub-on-badge');
     player.querySelectorAll('track').forEach(t => t.remove());
-    sel.innerHTML = '<option value="">— Nonaktif —</option>';
+    sel.innerHTML = '';
+    sel.appendChild(el('option', { value: '' }, ['— Nonaktif —']));
     if (badge) badge.style.display = 'none';
     if (toggleRow) toggleRow.style.display = 'none';
-
     if (!fileName || !folderPath) return;
 
-    // Minta daftar subtitle track dari server
     GM_xmlhttpRequest({
         method: 'GET',
         url: `${API}/api/subtitles?fileName=${encodeURIComponent(fileName)}&folderPath=${encodeURIComponent(folderPath)}`,
@@ -883,15 +930,11 @@ function playFile(fileName, folderPath, title) {
                 if (!tracks || !tracks.length) return;
                 toggleRow.style.display = 'flex';
                 tracks.forEach(t => {
-                    const opt = document.createElement('option');
-                    opt.value = t.streamKey;
-                    opt.textContent = `${t.label} (${t.lang})`;
+                    const opt = el('option', { value: t.streamKey }, [`${t.label} (${t.lang})`]);
                     sel.appendChild(opt);
                     const track = document.createElement('track');
-                    track.kind    = 'subtitles';
-                    track.label   = t.label;
-                    track.srclang = t.lang;
-                    track.src     = `${API}/api/subtitle-stream/${t.streamKey}`;
+                    track.kind = 'subtitles'; track.label = t.label; track.srclang = t.lang;
+                    track.src = `${API}/api/subtitle-stream/${t.streamKey}`;
                     player.appendChild(track);
                 });
                 sel.onchange = function() {
@@ -916,29 +959,55 @@ function createCardElement(item, shorts, asShelf, isScan) {
     const inLib = item.inHistory;
 
     card.className = `v-card${shorts ? ' shorts-card' : ''}${asShelf ? ' shelf-card' : ''}`;
-    card.innerHTML = `
-        <div class="thumb-wrap">
-            ${item.thumbnail ? `<img src="${thumbSrc(item.thumbnail)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">` : ''}
-            <div class="no-thumb" style="${item.thumbnail ? 'display:none' : ''}">${shorts ? '📱' : '🎬'}</div>
-        </div>
-        <span class="thumb-quality">${extOrSize}</span>
-        ${shorts ? `<span class="type-badge">SHORTS</span>` : ''}
-        ${isScan ? `<button class="sc-add ${inLib ? 'in-lib' : ''}" title="${inLib ? 'Sudah di Library' : 'Tambah ke Library'}">${inLib ? '✓' : '+'}</button>` : `<button class="del-b" title="Hapus Permanen">🗑</button>`}
-        <div class="cb">
-            <div class="card-title" title="${item.title}">${item.title}</div>
-            <div class="card-tags">
-                ${folder ? `<span class="tag tag-f" title="${item.folderPath}">📂 ${folder}</span>` : ''}
-                ${!isScan && item.filesize ? `<span class="tag tag-s">💾 ${item.filesize}</span>` : ''}
-                ${shorts ? `<span class="tag tag-shorts">📱 Shorts</span>` : ''}
-            </div>
-            <div class="card-acts">
-                <button class="play-b">▶ Play</button>
-                ${isScan && !inLib ? `<button class="sc-add-btn" style="background:#0a5;color:#fff;border:none;padding:5px 12px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:700">+ Library</button>` : ''}
-            </div>
-        </div>
-    `;
 
-    card.querySelector('.play-b').onclick = () => {
+    // thumb
+    const thumbWrap = el('div', { class: 'thumb-wrap' });
+    if (item.thumbnail) {
+        const img = el('img', { src: thumbSrc(item.thumbnail) });
+        img.onerror = () => { img.style.display = 'none'; noThumb.style.display = 'flex'; };
+        thumbWrap.appendChild(img);
+    }
+    const noThumb = el('div', { class: 'no-thumb', style: item.thumbnail ? 'display:none' : '', textContent: shorts ? '📱' : '🎬' });
+    thumbWrap.appendChild(noThumb);
+    card.appendChild(thumbWrap);
+
+    const qualBadge = el('span', { class: 'thumb-quality', textContent: extOrSize });
+    card.appendChild(qualBadge);
+
+    if (shorts) card.appendChild(el('span', { class: 'type-badge', textContent: 'SHORTS' }));
+
+    if (isScan) {
+        const scAdd = el('button', { class: 'sc-add' + (inLib ? ' in-lib' : ''), title: inLib ? 'Sudah di Library' : 'Tambah ke Library', textContent: inLib ? '✓' : '+' });
+        card.appendChild(scAdd);
+    } else {
+        const delB = el('button', { class: 'del-b', title: 'Hapus Permanen', textContent: '🗑' });
+        card.appendChild(delB);
+    }
+
+    const cb = el('div', { class: 'cb' });
+    const cardTitle = el('div', { class: 'card-title' });
+    cardTitle.title = item.title;
+    cardTitle.textContent = item.title;
+    const cardTags = el('div', { class: 'card-tags' });
+    if (folder) {
+        const tagF = el('span', { class: 'tag tag-f' }); tagF.title = item.folderPath || '';
+        tagF.textContent = '📂 ' + folder; cardTags.appendChild(tagF);
+    }
+    if (!isScan && item.filesize) cardTags.appendChild(el('span', { class: 'tag tag-s', textContent: '💾 ' + item.filesize }));
+    if (shorts) cardTags.appendChild(el('span', { class: 'tag tag-shorts', textContent: '📱 Shorts' }));
+
+    const cardActs = el('div', { class: 'card-acts' });
+    const playBtn = el('button', { class: 'play-b', textContent: '▶ Play' });
+    cardActs.appendChild(playBtn);
+
+    if (isScan && !inLib) {
+        const scAddBtn = el('button', { class: 'sc-add-btn', style: 'background:#0a5;color:#fff;border:none;padding:5px 12px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:700', textContent: '+ Library' });
+        cardActs.appendChild(scAddBtn);
+    }
+    cb.appendChild(cardTitle); cb.appendChild(cardTags); cb.appendChild(cardActs);
+    card.appendChild(cb);
+
+    playBtn.onclick = () => {
         if (isScan) {
             document.getElementById('p-title').textContent = item.title;
             player.src = `${API}/api/stream/${item.streamKey}`; player.play();
@@ -949,44 +1018,47 @@ function createCardElement(item, shorts, asShelf, isScan) {
     };
 
     if (isScan) {
-        const addBtn = card.querySelector('.sc-add'); const addBtnCb = card.querySelector('.sc-add-btn');
+        const addBtnEl = card.querySelector('.sc-add');
+        const addBtnCb = card.querySelector('.sc-add-btn');
         const addToLib = () => {
             GM_xmlhttpRequest({
                 method: 'POST', url: `${API}/api/history/add`, headers: {'Content-Type':'application/json'},
                 data: JSON.stringify({ title: item.title, quality: extOrSize, thumbnail: item.thumbnail || '', fileName: item.fileName, filesize: item.filesize, folderPath: item.folderPath, isShorts: shorts, sourceUrl: item.sourceUrl || '' }),
-                onload: () => { addBtn.className = 'sc-add in-lib'; addBtn.textContent = '✓'; addBtn.title = 'Sudah di Library'; if(addBtnCb) addBtnCb.remove(); item.inHistory = true; lastHistoryLen = -1; }
-            });
-        };
-        if (addBtn) addBtn.onclick = (e) => { e.stopPropagation(); if(!item.inHistory) addToLib(); };
-        if (addBtnCb) addBtnCb.onclick = (e) => { e.stopPropagation(); if(!item.inHistory) addToLib(); };
-    } else {
-        card.querySelector('.del-b').onclick = (e) => {
-            e.stopPropagation();
-            if (!confirm('Hapus file ini secara permanen?')) return;
-            GM_xmlhttpRequest({
-                method: 'DELETE', url: `${API}/api/history`, headers: {'Content-Type':'application/json'},
-                data: JSON.stringify({ fileName: item.fileName, folderPath: item.folderPath || null }),
                 onload: () => {
-                    let virtualFolderMap = JSON.parse(localStorage.getItem('ytdl_virtual_folder_map') || '{}');
-                    if (virtualFolderMap[item.fileName]) { delete virtualFolderMap[item.fileName]; localStorage.setItem('ytdl_virtual_folder_map', JSON.stringify(virtualFolderMap)); }
-                    lastHistoryLen = -1; loadHistory(true);
+                    if (addBtnEl) { addBtnEl.className = 'sc-add in-lib'; addBtnEl.textContent = '✓'; addBtnEl.title = 'Sudah di Library'; }
+                    if (addBtnCb) addBtnCb.remove();
+                    item.inHistory = true; lastHistoryLen = -1;
                 }
             });
         };
-
-        // DRAG EVENT
+        if (addBtnEl) addBtnEl.onclick = (e) => { e.stopPropagation(); if(!item.inHistory) addToLib(); };
+        if (addBtnCb) addBtnCb.onclick = (e) => { e.stopPropagation(); if(!item.inHistory) addToLib(); };
+    } else {
+        const delBtnEl = card.querySelector('.del-b');
+        if (delBtnEl) {
+            delBtnEl.onclick = (e) => {
+                e.stopPropagation();
+                if (!confirm('Hapus file ini secara permanen?')) return;
+                GM_xmlhttpRequest({
+                    method: 'DELETE', url: `${API}/api/history`, headers: {'Content-Type':'application/json'},
+                    data: JSON.stringify({ fileName: item.fileName, folderPath: item.folderPath || null }),
+                    onload: () => {
+                        let vMap = JSON.parse(localStorage.getItem('ytdl_virtual_folder_map') || '{}');
+                        if (vMap[item.fileName]) { delete vMap[item.fileName]; localStorage.setItem('ytdl_virtual_folder_map', JSON.stringify(vMap)); }
+                        lastHistoryLen = -1; loadHistory(true);
+                    }
+                });
+            };
+        }
         card.draggable = true;
-        card.addEventListener('dragstart', (e) => {
-            e.dataTransfer.setData('text/plain', item.fileName);
-            card.classList.add('is-dragging');
-        });
+        card.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', item.fileName); card.classList.add('is-dragging'); });
         card.addEventListener('dragend', () => { card.classList.remove('is-dragging'); });
     }
     return card;
 }
 
 /* ══════════════════════════════════════════════════════
-   RENDER LIBRARY (ANTI-CRASH & SAFE FETCH)
+   RENDER LIBRARY
 ══════════════════════════════════════════════════════ */
 function loadHistory(force) {
     GM_xmlhttpRequest({
@@ -998,11 +1070,17 @@ function loadHistory(force) {
                 lastHistoryLen = hist.length;
                 renderHistory(hist);
             } catch (err) {
-                document.getElementById('h-list').innerHTML = `<p style="text-align:center;color:#f55;margin-top:20px;padding:20px;border:1px solid #f55;border-radius:10px;background:#200;">❌ <b>Gagal membaca data JSON.</b><br><br>Server backend tidak membalas dengan format yang benar. Cek console log API Anda.</p>`;
+                const hListEl = document.getElementById('h-list');
+                hListEl.innerHTML = '';
+                const errMsg = el('p', { style: 'text-align:center;color:#f55;margin-top:20px;padding:20px;border:1px solid #f55;border-radius:10px;background:#200;', textContent: '❌ Gagal membaca data JSON. Server backend tidak membalas dengan format yang benar.' });
+                hListEl.appendChild(errMsg);
             }
         },
         onerror: () => {
-            document.getElementById('h-list').innerHTML = `<p style="text-align:center;color:#f55;margin-top:20px;padding:20px;border:1px solid #f55;border-radius:10px;background:#200;">❌ <b>Koneksi Terputus</b><br><br>Script tidak dapat menghubungi <code>localhost:8989</code>. Pastikan backend server Anda sudah menyala.</p>`;
+            const hListEl = document.getElementById('h-list');
+            hListEl.innerHTML = '';
+            const errMsg = el('p', { style: 'text-align:center;color:#f55;margin-top:20px;padding:20px;border:1px solid #f55;border-radius:10px;background:#200;', textContent: '❌ Koneksi Terputus. Pastikan backend server sudah menyala di localhost:8989.' });
+            hListEl.appendChild(errMsg);
         }
     });
 }
@@ -1010,7 +1088,8 @@ function loadHistory(force) {
 function renderHistory(hist) {
     const list = document.getElementById('h-list');
     list.className = libraryView;
-    if (!hist.length) { list.innerHTML = '<p style="text-align:center;color:#333;margin-top:20px">Belum ada library.</p>'; return; }
+    list.innerHTML = '';
+    if (!hist.length) { list.appendChild(el('p', { style: 'text-align:center;color:#333;margin-top:20px', textContent: 'Belum ada library.' })); return; }
 
     let virtualFolderMap = JSON.parse(localStorage.getItem('ytdl_virtual_folder_map') || '{}');
     let customFoldersList = JSON.parse(localStorage.getItem('ytdl_custom_folders') || '[]');
@@ -1020,33 +1099,24 @@ function renderHistory(hist) {
     if (libraryFilter === 'shorts') filtered = filtered.filter(item => checkIsShorts(item));
     else if (libraryFilter === 'video') filtered = filtered.filter(item => !checkIsShorts(item));
 
-    if (!filtered.length) { list.innerHTML = `<p style="text-align:center;color:#333;margin-top:20px">Tidak ada ${libraryFilter === 'shorts' ? 'Shorts' : 'Video'} di library.</p>`; return; }
+    if (!filtered.length) { list.appendChild(el('p', { style: 'text-align:center;color:#333;margin-top:20px', textContent: `Tidak ada ${libraryFilter === 'shorts' ? 'Shorts' : 'Video'} di library.` })); return; }
 
-    list.innerHTML = '';
     const collapsedFolders = JSON.parse(localStorage.getItem('ytdl_collapsed_folders') || '{}');
     let shortsForShelf = [];
     let itemsForGroups = [];
 
-    // AUTO-MAP PLAYLISTS & SORT TO SHELF OR GROUPS
     filtered.forEach(item => {
         let autoFolder = null;
         if (!virtualFolderMap[item.fileName] && item.sourceUrl) {
             const match = item.sourceUrl.match(/[?&]list=([^&]+)/);
             if (match && match[1]) {
                 const mappedName = localStorage.getItem('ytdl_plist_' + match[1]);
-                if (mappedName) {
-                    autoFolder = mappedName;
-                    virtualFolderMap[item.fileName] = autoFolder;
-                    mappedFoldersChanged = true;
-                }
+                if (mappedName) { autoFolder = mappedName; virtualFolderMap[item.fileName] = autoFolder; mappedFoldersChanged = true; }
             }
         }
-
         let cName = virtualFolderMap[item.fileName] || autoFolder;
-
-        if (cName) {
-            itemsForGroups.push(item);
-        } else {
+        if (cName) { itemsForGroups.push(item); }
+        else {
             if (libraryFilter === 'all' && checkIsShorts(item)) { shortsForShelf.push(item); }
             else { itemsForGroups.push(item); }
         }
@@ -1054,14 +1124,16 @@ function renderHistory(hist) {
 
     if (mappedFoldersChanged) localStorage.setItem('ytdl_virtual_folder_map', JSON.stringify(virtualFolderMap));
 
-    // --- 1. RENDER SHORTS SHELF ---
+    // Shorts shelf
     if (shortsForShelf.length > 0) {
-        const shelfGroup = document.createElement('div'); shelfGroup.className = 'folder-group';
-        const shelfKey = '__shorts_shelf_lib__'; const isCollapsed = collapsedFolders[shelfKey];
-        const shelfHeader = document.createElement('div');
-        shelfHeader.className = `folder-group-header${isCollapsed ? ' collapsed' : ''}`;
-        shelfHeader.style.background = 'linear-gradient(90deg, #500, #1a1a1a)';
-        shelfHeader.innerHTML = `<span class="fg-icon">📱</span><span class="fg-name" style="color:#fff;">Rak Shorts (Drop kesini untuk keluar folder)</span><span class="fg-count" style="background:rgba(0,0,0,0.5);">${shortsForShelf.length}</span><span class="fg-toggle">▼</span>`;
+        const shelfGroup = el('div', { class: 'folder-group' });
+        const shelfKey = '__shorts_shelf_lib__';
+        const isCollapsed = collapsedFolders[shelfKey];
+        const shelfHeader = el('div', { class: `folder-group-header${isCollapsed ? ' collapsed' : ''}`, style: 'background:linear-gradient(90deg,#500,#1a1a1a)' });
+        shelfHeader.appendChild(el('span', { class: 'fg-icon', textContent: '📱' }));
+        shelfHeader.appendChild(el('span', { class: 'fg-name', style: 'color:#fff;', textContent: 'Rak Shorts (Drop kesini untuk keluar folder)' }));
+        shelfHeader.appendChild(el('span', { class: 'fg-count', style: 'background:rgba(0,0,0,0.5);', textContent: String(shortsForShelf.length) }));
+        shelfHeader.appendChild(el('span', { class: 'fg-toggle', textContent: '▼' }));
 
         shelfHeader.addEventListener('dragover', (e) => { e.preventDefault(); shelfHeader.classList.add('drag-over'); });
         shelfHeader.addEventListener('dragleave', () => { shelfHeader.classList.remove('drag-over'); });
@@ -1071,7 +1143,7 @@ function renderHistory(hist) {
             if (fn) { let vMap = JSON.parse(localStorage.getItem('ytdl_virtual_folder_map') || '{}'); delete vMap[fn]; localStorage.setItem('ytdl_virtual_folder_map', JSON.stringify(vMap)); lastHistoryLen = -1; loadHistory(true); }
         });
 
-        const shelfBody = document.createElement('div'); shelfBody.className = `shorts-shelf-container${isCollapsed ? ' collapsed' : ''}`;
+        const shelfBody = el('div', { class: `shorts-shelf-container${isCollapsed ? ' collapsed' : ''}` });
         shelfHeader.onclick = () => {
             const collapsed = !shelfHeader.classList.contains('collapsed');
             shelfHeader.classList.toggle('collapsed', collapsed); shelfBody.classList.toggle('collapsed', collapsed);
@@ -1079,23 +1151,22 @@ function renderHistory(hist) {
             if (collapsed) saved[shelfKey] = true; else delete saved[shelfKey];
             localStorage.setItem('ytdl_collapsed_folders', JSON.stringify(saved));
         };
-
-        shortsForShelf.forEach(item => { shelfBody.appendChild(createCardElement(item, true, true, false)); });
+        shortsForShelf.forEach(item => shelfBody.appendChild(createCardElement(item, true, true, false)));
         shelfGroup.appendChild(shelfHeader); shelfGroup.appendChild(shelfBody); list.appendChild(shelfGroup);
     }
 
-    // --- 2. RENDER FOLDER GROUPS ---
+    // Folder groups
     const groups = {};
     customFoldersList.forEach(cf => { groups[`__custom__${cf}`] = { label: `📁 ${cf}`, items: [], isCustom: true, rawName: cf }; });
 
     itemsForGroups.forEach(item => {
-        let folderKey, folderLabel;
+        let folderKey;
         if (virtualFolderMap[item.fileName]) {
             const cName = virtualFolderMap[item.fileName]; folderKey = `__custom__${cName}`;
             if (!groups[folderKey]) groups[folderKey] = { label: `📁 ${cName}`, items: [], isCustom: true, rawName: cName };
         } else {
             folderKey = item.folderPath || '__default__';
-            folderLabel = folderKey === '__default__' ? '📥 Unduhan Utama' : ('📂 ' + (folderKey.split(/[\\/]/).filter(Boolean).pop() || folderKey));
+            const folderLabel = folderKey === '__default__' ? '📥 Unduhan Utama' : ('📂 ' + (folderKey.split(/[\\/]/).filter(Boolean).pop() || folderKey));
             if (!groups[folderKey]) groups[folderKey] = { label: folderLabel, items: [], isCustom: false, rawName: folderKey };
         }
         groups[folderKey].items.push(item);
@@ -1103,12 +1174,16 @@ function renderHistory(hist) {
 
     Object.entries(groups).forEach(([folderKey, group]) => {
         if (!group.isCustom && group.items.length === 0) return;
-        const groupEl = document.createElement('div'); groupEl.className = 'folder-group';
+        const groupEl = el('div', { class: 'folder-group' });
         const isCollapsed = collapsedFolders[folderKey];
-
-        const header = document.createElement('div');
-        header.className = `folder-group-header${isCollapsed ? ' collapsed' : ''}`;
-        header.innerHTML = `<span class="fg-name">${group.label}</span><span class="fg-count">${group.items.length}</span>${group.isCustom ? `<button class="fg-del-btn" title="Hapus Folder (Video tidak ikut terhapus)">✕</button>` : ''}<span class="fg-toggle">▼</span>`;
+        const header = el('div', { class: `folder-group-header${isCollapsed ? ' collapsed' : ''}` });
+        header.appendChild(el('span', { class: 'fg-name', textContent: group.label }));
+        header.appendChild(el('span', { class: 'fg-count', textContent: String(group.items.length) }));
+        if (group.isCustom) {
+            const delBtn = el('button', { class: 'fg-del-btn', title: 'Hapus Folder (Video tidak ikut terhapus)', textContent: '✕' });
+            header.appendChild(delBtn);
+        }
+        header.appendChild(el('span', { class: 'fg-toggle', textContent: '▼' }));
 
         header.addEventListener('dragover', (e) => { e.preventDefault(); header.classList.add('drag-over'); });
         header.addEventListener('dragleave', () => { header.classList.remove('drag-over'); });
@@ -1123,8 +1198,10 @@ function renderHistory(hist) {
             }
         });
 
+        const body = el('div', { class: `folder-group-body${isCollapsed ? ' collapsed' : ''}` });
+
         header.onclick = (e) => {
-            if(e.target.classList.contains('fg-del-btn')) return;
+            if (e.target.classList.contains('fg-del-btn')) return;
             const collapsed = !header.classList.contains('collapsed');
             header.classList.toggle('collapsed', collapsed); body.classList.toggle('collapsed', collapsed);
             const saved = JSON.parse(localStorage.getItem('ytdl_collapsed_folders') || '{}');
@@ -1133,7 +1210,8 @@ function renderHistory(hist) {
         };
 
         if (group.isCustom) {
-            header.querySelector('.fg-del-btn').onclick = (e) => {
+            const delBtnEl = header.querySelector('.fg-del-btn');
+            if (delBtnEl) delBtnEl.onclick = (e) => {
                 e.stopPropagation();
                 if (confirm(`Hapus folder "${group.rawName}"?\n(Video di dalamnya hanya akan kembali ke daftar utama)`)) {
                     let cList = JSON.parse(localStorage.getItem('ytdl_custom_folders') || '[]');
@@ -1146,8 +1224,7 @@ function renderHistory(hist) {
             };
         }
 
-        const body = document.createElement('div'); body.className = `folder-group-body${isCollapsed ? ' collapsed' : ''}`;
-        group.items.forEach(item => { body.appendChild(createCardElement(item, checkIsShorts(item), false, false)); });
+        group.items.forEach(item => body.appendChild(createCardElement(item, checkIsShorts(item), false, false)));
         groupEl.appendChild(header); groupEl.appendChild(body); list.appendChild(groupEl);
     });
 }
@@ -1157,10 +1234,12 @@ function renderHistory(hist) {
 ══════════════════════════════════════════════════════ */
 function openQualityPopup(videoUrl, titleHint, isShorts) {
     document.getElementById('popup-title').textContent = titleHint || '';
-
-    document.getElementById('q-list').innerHTML = `
-        <span style="color:#555;font-size:13px">Menganalisis...<br>
-        <span style="font-size:9px;color:#888;word-break:break-all;">URL: ${videoUrl}</span></span>`;
+    const qListEl = document.getElementById('q-list');
+    qListEl.innerHTML = '';
+    const loadingMsg = el('span', { style: 'color:#555;font-size:13px', textContent: 'Menganalisis...' });
+    const urlNote = el('span', { style: 'font-size:9px;color:#888;word-break:break-all', textContent: 'URL: ' + videoUrl });
+    loadingMsg.appendChild(document.createElement('br')); loadingMsg.appendChild(urlNote);
+    qListEl.appendChild(loadingMsg);
 
     const plZone = document.getElementById('playlist-inject-zone');
     plZone.innerHTML = '';
@@ -1173,25 +1252,23 @@ function openQualityPopup(videoUrl, titleHint, isShorts) {
         const panelTitle = document.querySelector('.ytd-playlist-panel-renderer .title, yt-dynamic-sizing-formatted-string.ytd-playlist-header-renderer');
         if (panelTitle) pTitle = panelTitle.textContent.trim();
 
-        plZone.innerHTML = `
-            <div style="margin-bottom:15px; background:#2a2a2a; padding:12px; border-radius:8px; border:1px solid #444;">
-                <p style="font-size:11px; color:#aaa; margin:0 0 8px; text-align:left;">Deteksi Playlist: <br><b style="color:#fff">${pTitle}</b></p>
-                <button id="btn-dl-playlist" style="width:100%; background:#0a5; color:#fff; border:none; padding:10px; border-radius:6px; font-weight:bold; cursor:pointer; transition:all .2s;">🗂️ Download Seluruh Playlist</button>
-                <div style="margin:10px 0; border-top:1px solid #444;"></div>
-                <p style="font-size:11px; color:#aaa; margin:10px 0 5px; text-align:left;">Atau pilih kualitas untuk video ini saja:</p>
-            </div>
-        `;
+        const plBox = el('div', { style: 'margin-bottom:15px;background:#2a2a2a;padding:12px;border-radius:8px;border:1px solid #444;' });
+        const plInfo = el('p', { style: 'font-size:11px;color:#aaa;margin:0 0 8px;text-align:left;', textContent: 'Deteksi Playlist: ' });
+        const plName = el('b', { style: 'color:#fff', textContent: pTitle });
+        plInfo.appendChild(plName);
+        const dlPlBtn = el('button', { id: 'btn-dl-playlist', style: 'width:100%;background:#0a5;color:#fff;border:none;padding:10px;border-radius:6px;font-weight:bold;cursor:pointer;', textContent: '🗂️ Download Seluruh Playlist' });
+        const divider = el('div', { style: 'margin:10px 0;border-top:1px solid #444;' });
+        const singleInfo = el('p', { style: 'font-size:11px;color:#aaa;margin:10px 0 5px;text-align:left;', textContent: 'Atau pilih kualitas untuk video ini saja:' });
+        plBox.appendChild(plInfo); plBox.appendChild(dlPlBtn); plBox.appendChild(divider); plBox.appendChild(singleInfo);
+        plZone.appendChild(plBox);
 
-        plZone.querySelector('#btn-dl-playlist').onclick = () => {
+        dlPlBtn.onclick = () => {
             let cList = JSON.parse(localStorage.getItem('ytdl_custom_folders') || '[]');
             if (!cList.includes(pTitle)) { cList.push(pTitle); localStorage.setItem('ytdl_custom_folders', JSON.stringify(cList)); }
             localStorage.setItem('ytdl_plist_' + listId, pTitle);
-
             const purePlaylistUrl = `https://www.youtube.com/playlist?list=${listId}`;
-
             GM_xmlhttpRequest({
-                method: 'POST', url: `${API}/api/download`,
-                headers: {'Content-Type':'application/json'},
+                method: 'POST', url: `${API}/api/download`, headers: {'Content-Type':'application/json'},
                 data: JSON.stringify({ url: purePlaylistUrl, format_id: 'best', title: pTitle, quality: 'Playlist', thumbnail: '', isShorts: false, sourceUrl: purePlaylistUrl, folderName: pTitle })
             });
             popup.classList.remove('show');
@@ -1205,49 +1282,63 @@ function openQualityPopup(videoUrl, titleHint, isShorts) {
         method: 'GET', url: `${API}/api/info?url=${encodeURIComponent(videoUrl)}`,
         onload: (res) => {
             let data;
-            try {
-                data = JSON.parse(res.responseText);
-            } catch(_) {
-                document.getElementById('q-list').innerHTML = `<span style="color:#f55;font-size:12px;">❌ Gagal memuat info.<br>Format respons dari server salah.</span>`; return;
+            try { data = JSON.parse(res.responseText); } catch(_) {
+                qListEl.innerHTML = '';
+                qListEl.appendChild(el('span', { style: 'color:#f55;font-size:12px;', textContent: '❌ Gagal memuat info. Format respons dari server salah.' }));
+                return;
             }
             if (data.error) {
-                document.getElementById('q-list').innerHTML = `<span style="color:#f55;font-size:12px;">❌ yt-dlp error:<br>${data.error}</span>`; return;
+                qListEl.innerHTML = '';
+                qListEl.appendChild(el('span', { style: 'color:#f55;font-size:12px;', textContent: '❌ yt-dlp error: ' + data.error }));
+                return;
             }
 
             document.getElementById('popup-title').textContent = (data.title || '').substring(0, 55);
-            const cont = document.getElementById('q-list'); cont.innerHTML = '';
+            qListEl.innerHTML = '';
 
-            if (!data.formats || !data.formats.length) { cont.innerHTML = '<span style="color:#f55">Tidak ada format tersedia</span>'; return; }
+            if (!data.formats || !data.formats.length) {
+                qListEl.appendChild(el('span', { style: 'color:#f55', textContent: 'Tidak ada format tersedia' }));
+                return;
+            }
 
-            // Subtitle selector
             const subLangs = data.subtitleLangs || [];
             if (subLangs.length > 0) {
-                const subRow = document.createElement('div');
-                subRow.className = 'dl-sub-row';
-                subRow.innerHTML = `💬 <label style="color:#a0f;font-weight:700">Subtitle:</label>
-                    <select id="popup-sub-sel" style="margin-left:4px">
-                        <option value="">— Tidak —</option>
-                        ${subLangs.map(l => `<option value="${l}"${l==='id'||l==='en'?' selected':''} >${l}</option>`).join('')}
-                    </select>`;
-                cont.appendChild(subRow);
+                const subRow = el('div', { class: 'dl-sub-row' });
+                subRow.appendChild(document.createTextNode('💬 '));
+                const subRowLabel = el('label', { style: 'color:#a0f;font-weight:700;', textContent: 'Subtitle:' });
+                const subRowSel = el('select', { id: 'popup-sub-sel', style: 'margin-left:4px' });
+                subRowSel.appendChild(el('option', { value: '' }, ['— Tidak —']));
+                subLangs.forEach(l => {
+                    const opt = el('option', { value: l }, [l]);
+                    if (l === 'id' || l === 'en') opt.selected = true;
+                    subRowSel.appendChild(opt);
+                });
+                subRow.appendChild(subRowLabel); subRow.appendChild(subRowSel);
+                qListEl.appendChild(subRow);
             }
 
             data.formats.forEach(f => {
-                const btn = document.createElement('button'); btn.className = 'q-btn';
-                btn.innerHTML = `${f.quality}${f.filesize ? `<span class="q-sz">~${f.filesize}</span>` : ''}`;
+                const btn = el('button', { class: 'q-btn', textContent: f.quality });
+                if (f.filesize) {
+                    const sz = el('span', { class: 'q-sz', textContent: '~' + f.filesize });
+                    btn.appendChild(sz);
+                }
                 btn.onclick = () => {
-                    const subSel = document.getElementById('popup-sub-sel');
-                    const subtitle_lang = subSel ? subSel.value : '';
+                    const subSelEl = document.getElementById('popup-sub-sel');
+                    const subtitle_lang = subSelEl ? subSelEl.value : '';
                     GM_xmlhttpRequest({
                         method: 'POST', url: `${API}/api/download`, headers: {'Content-Type':'application/json'},
                         data: JSON.stringify({ url: videoUrl, format_id: f.format_id, title: data.title, quality: f.quality, thumbnail: data.thumbnail, isShorts: !!isShorts, sourceUrl: videoUrl, subtitle_lang: subtitle_lang || undefined })
                     });
                     popup.classList.remove('show');
                 };
-                cont.appendChild(btn);
+                qListEl.appendChild(btn);
             });
         },
-        onerror: () => { document.getElementById('q-list').innerHTML = '<span style="color:#f55">❌ Koneksi ke backend terputus.<br>(localhost:8989 down)</span>'; }
+        onerror: () => {
+            qListEl.innerHTML = '';
+            qListEl.appendChild(el('span', { style: 'color:#f55', textContent: '❌ Koneksi ke backend terputus. (localhost:8989 down)' }));
+        }
     });
 }
 
@@ -1263,22 +1354,36 @@ function loadScanConfig() {
         onload: (res) => {
             try {
                 const cfg = JSON.parse(res.responseText);
-                mainFolder  = cfg.downloadFolder; scanFolders = cfg.scanFolders || []; renderFolderList();
+                mainFolder = cfg.downloadFolder; scanFolders = cfg.scanFolders || []; renderFolderList();
             } catch (err) { console.error("Gagal parse API config"); }
         },
         onerror: () => console.error("Koneksi gagal saat load Scan Config")
     });
 }
 
-function saveScanFolders() { GM_xmlhttpRequest({ method: 'POST', url: `${API}/api/config`, headers: {'Content-Type':'application/json'}, data: JSON.stringify({ scanFolders }) }); }
+function saveScanFolders() {
+    GM_xmlhttpRequest({ method: 'POST', url: `${API}/api/config`, headers: {'Content-Type':'application/json'}, data: JSON.stringify({ scanFolders }) });
+}
 
 function renderFolderList() {
-    const el = document.getElementById('folder-list'); el.innerHTML = '';
-    el.insertAdjacentHTML('beforeend', `<div class="folder-item"><span>📥</span><span class="fp" title="${mainFolder}">${mainFolder}</span><span class="fbadge">Utama</span></div>`);
+    const folderListDOM = document.getElementById('folder-list');
+    folderListDOM.innerHTML = '';
+    const mainItem = el('div', { class: 'folder-item' });
+    mainItem.appendChild(el('span', { textContent: '📥' }));
+    const fpMain = el('span', { class: 'fp' }); fpMain.title = mainFolder; fpMain.textContent = mainFolder;
+    mainItem.appendChild(fpMain);
+    mainItem.appendChild(el('span', { class: 'fbadge', textContent: 'Utama' }));
+    folderListDOM.appendChild(mainItem);
+
     scanFolders.forEach((f, i) => {
-        const div = document.createElement('div'); div.className = 'folder-item';
-        div.innerHTML = `<span>📂</span><span class="fp" title="${f}">${f}</span><button class="frem">✕</button>`;
-        div.querySelector('.frem').onclick = () => { scanFolders.splice(i, 1); saveScanFolders(); renderFolderList(); }; el.appendChild(div);
+        const div = el('div', { class: 'folder-item' });
+        div.appendChild(el('span', { textContent: '📂' }));
+        const fpSpan = el('span', { class: 'fp' }); fpSpan.title = f; fpSpan.textContent = f;
+        div.appendChild(fpSpan);
+        const remBtn = el('button', { class: 'frem', textContent: '✕' });
+        remBtn.onclick = () => { scanFolders.splice(i, 1); saveScanFolders(); renderFolderList(); };
+        div.appendChild(remBtn);
+        folderListDOM.appendChild(div);
     });
 }
 
@@ -1290,30 +1395,39 @@ document.getElementById('folder-add-btn').onclick = () => {
 document.getElementById('folder-input').onkeydown = e => { if (e.key === 'Enter') document.getElementById('folder-add-btn').click(); };
 
 document.getElementById('scan-btn').onclick = () => {
-    const btn = document.getElementById('scan-btn'); const stats = document.getElementById('scan-stats'); const list = document.getElementById('scan-list');
-    btn.disabled = true; btn.textContent = '⏳ Memindai...'; stats.textContent = ''; list.innerHTML = '<p class="sc-empty">Memindai...</p>';
+    const btn = document.getElementById('scan-btn');
+    const stats = document.getElementById('scan-stats');
+    const listEl = document.getElementById('scan-list');
+    btn.disabled = true; btn.textContent = '⏳ Memindai...'; stats.textContent = '';
+    listEl.innerHTML = ''; listEl.appendChild(el('p', { class: 'sc-empty', textContent: 'Memindai...' }));
     GM_xmlhttpRequest({
         method: 'GET', url: `${API}/api/scan`,
         onload: (res) => {
             btn.disabled = false; btn.textContent = '🔍 Scan Sekarang';
-            try { lastScannedFiles = JSON.parse(res.responseText); } catch(_) { list.innerHTML = '<p class="sc-empty" style="color:#f55">Response tidak valid</p>'; return; }
+            try { lastScannedFiles = JSON.parse(res.responseText); } catch(_) {
+                listEl.innerHTML = ''; listEl.appendChild(el('p', { class: 'sc-empty', style: 'color:#f55', textContent: 'Response tidak valid' })); return;
+            }
             stats.textContent = `${lastScannedFiles.length} video ditemukan`; renderScanList(lastScannedFiles);
         },
-        onerror: () => { btn.disabled = false; btn.textContent = '🔍 Scan Sekarang'; list.innerHTML = '<p class="sc-empty" style="color:#f55">Gagal terhubung ke server</p>'; }
+        onerror: () => {
+            btn.disabled = false; btn.textContent = '🔍 Scan Sekarang';
+            listEl.innerHTML = ''; listEl.appendChild(el('p', { class: 'sc-empty', style: 'color:#f55', textContent: 'Gagal terhubung ke server' }));
+        }
     });
 };
 
 function renderScanList(files) {
-    const list = document.getElementById('scan-list');
-    list.className = libraryView;
-    if (!files.length) { list.innerHTML = '<p class="sc-empty">Tidak ada video ditemukan.</p>'; return; }
+    const listEl = document.getElementById('scan-list');
+    listEl.className = libraryView;
+    listEl.innerHTML = '';
+
+    if (!files.length) { listEl.appendChild(el('p', { class: 'sc-empty', textContent: 'Tidak ada video ditemukan.' })); return; }
 
     let filtered = [...files];
     if (libraryFilter === 'shorts') filtered = filtered.filter(item => checkIsShorts(item));
     else if (libraryFilter === 'video') filtered = filtered.filter(item => !checkIsShorts(item));
-    if (!filtered.length) { list.innerHTML = `<p style="text-align:center;color:#333;margin-top:20px">Tidak ada ${libraryFilter === 'shorts' ? 'Shorts' : 'Video'} ditemukan.</p>`; return; }
+    if (!filtered.length) { listEl.appendChild(el('p', { style: 'text-align:center;color:#333;margin-top:20px', textContent: `Tidak ada ${libraryFilter === 'shorts' ? 'Shorts' : 'Video'} ditemukan.` })); return; }
 
-    list.innerHTML = '';
     const collapsedFolders = JSON.parse(localStorage.getItem('ytdl_collapsed_folders') || '{}');
     let videosToGroup = filtered;
 
@@ -1321,14 +1435,16 @@ function renderScanList(files) {
         const shortsItems = filtered.filter(item => checkIsShorts(item));
         videosToGroup = filtered.filter(item => !checkIsShorts(item));
         if (shortsItems.length > 0) {
-            const shelfGroup = document.createElement('div'); shelfGroup.className = 'folder-group';
-            const shelfKey = '__shorts_shelf_scan__'; const isCollapsed = collapsedFolders[shelfKey];
-            const shelfHeader = document.createElement('div');
-            shelfHeader.className = `folder-group-header${isCollapsed ? ' collapsed' : ''}`;
-            shelfHeader.style.background = 'linear-gradient(90deg, #050, #1a1a1a)';
-            shelfHeader.innerHTML = `<span class="fg-icon">📱</span><span class="fg-name" style="color:#fff;">Rak Shorts (Hasil Scan)</span><span class="fg-count" style="background:rgba(0,0,0,0.5);">${shortsItems.length}</span><span class="fg-toggle">▼</span>`;
-            const shelfBody = document.createElement('div'); shelfBody.className = `shorts-shelf-container${isCollapsed ? ' collapsed' : ''}`;
+            const shelfGroup = el('div', { class: 'folder-group' });
+            const shelfKey = '__shorts_shelf_scan__';
+            const isCollapsed = collapsedFolders[shelfKey];
+            const shelfHeader = el('div', { class: `folder-group-header${isCollapsed ? ' collapsed' : ''}`, style: 'background:linear-gradient(90deg,#050,#1a1a1a)' });
+            shelfHeader.appendChild(el('span', { class: 'fg-icon', textContent: '📱' }));
+            shelfHeader.appendChild(el('span', { class: 'fg-name', style: 'color:#fff;', textContent: 'Rak Shorts (Hasil Scan)' }));
+            shelfHeader.appendChild(el('span', { class: 'fg-count', style: 'background:rgba(0,0,0,0.5);', textContent: String(shortsItems.length) }));
+            shelfHeader.appendChild(el('span', { class: 'fg-toggle', textContent: '▼' }));
 
+            const shelfBody = el('div', { class: `shorts-shelf-container${isCollapsed ? ' collapsed' : ''}` });
             shelfHeader.onclick = () => {
                 const collapsed = !shelfHeader.classList.contains('collapsed');
                 shelfHeader.classList.toggle('collapsed', collapsed); shelfBody.classList.toggle('collapsed', collapsed);
@@ -1336,9 +1452,8 @@ function renderScanList(files) {
                 if (collapsed) saved[shelfKey] = true; else delete saved[shelfKey];
                 localStorage.setItem('ytdl_collapsed_folders', JSON.stringify(saved));
             };
-
             shortsItems.forEach(item => shelfBody.appendChild(createCardElement(item, true, true, true)));
-            shelfGroup.appendChild(shelfHeader); shelfGroup.appendChild(shelfBody); list.appendChild(shelfGroup);
+            shelfGroup.appendChild(shelfHeader); shelfGroup.appendChild(shelfBody); listEl.appendChild(shelfGroup);
         }
     }
 
@@ -1351,13 +1466,13 @@ function renderScanList(files) {
             groups[folderPath].items.push(item);
         });
         Object.entries(groups).forEach(([folderPath, group]) => {
-            const groupEl = document.createElement('div'); groupEl.className = 'folder-group';
+            const groupEl = el('div', { class: 'folder-group' });
             const isCollapsed = collapsedFolders[folderPath];
-            const header = document.createElement('div');
-            header.className = `folder-group-header${isCollapsed ? ' collapsed' : ''}`;
-            header.innerHTML = `<span class="fg-name">${group.label}</span><span class="fg-count">${group.items.length}</span><span class="fg-toggle">▼</span>`;
-            const body = document.createElement('div'); body.className = `folder-group-body${isCollapsed ? ' collapsed' : ''}`;
-
+            const header = el('div', { class: `folder-group-header${isCollapsed ? ' collapsed' : ''}` });
+            header.appendChild(el('span', { class: 'fg-name', textContent: group.label }));
+            header.appendChild(el('span', { class: 'fg-count', textContent: String(group.items.length) }));
+            header.appendChild(el('span', { class: 'fg-toggle', textContent: '▼' }));
+            const body = el('div', { class: `folder-group-body${isCollapsed ? ' collapsed' : ''}` });
             header.onclick = () => {
                 const collapsed = !header.classList.contains('collapsed');
                 header.classList.toggle('collapsed', collapsed); body.classList.toggle('collapsed', collapsed);
@@ -1365,9 +1480,8 @@ function renderScanList(files) {
                 if (collapsed) saved[folderPath] = true; else delete saved[folderPath];
                 localStorage.setItem('ytdl_collapsed_folders', JSON.stringify(saved));
             };
-
             group.items.forEach(item => body.appendChild(createCardElement(item, checkIsShorts(item), false, true)));
-            groupEl.appendChild(header); groupEl.appendChild(body); list.appendChild(groupEl);
+            groupEl.appendChild(header); groupEl.appendChild(body); listEl.appendChild(groupEl);
         });
     }
 }
