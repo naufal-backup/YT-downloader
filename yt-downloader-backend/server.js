@@ -369,28 +369,37 @@ app.get('/api/events', (req, res) => {
 
 // ─── DOWNLOAD ────────────────────────────────────────────────────────────────
 app.post('/api/download', (req, res) => {
-    const { url, format_id, title, quality, thumbnail, isShorts, sourceUrl, subtitle_lang } = req.body;
+    const { url, format_id, title, quality, thumbnail, isShorts, sourceUrl, subtitle_lang, folderName } = req.body;
     if (!url || !format_id || !title) return res.status(400).json({ error: 'Parameter tidak lengkap' });
 
+    const isPlaylist = quality === 'Playlist' || url.includes('list=');
+    const safeFolderName = folderName ? folderName.replace(/[^a-z0-9]/gi, '_').trim() : null;
+    const downloadDirPath = safeFolderName ? path.join(config.downloadFolder, safeFolderName) : config.downloadFolder;
+
+    if (!fs.existsSync(downloadDirPath)) fs.mkdirSync(downloadDirPath, { recursive: true });
+
     const safeName   = title.replace(/[^a-z0-9]/gi, '_').toLowerCase().substring(0, 120);
-    const fileName   = `${safeName}.mp4`;
-    const outputPath = path.join(config.downloadFolder, fileName);
+    const fileName   = isPlaylist ? `${safeName}_playlist.mp4` : `${safeName}.mp4`;
+    const outputPath = isPlaylist 
+        ? path.join(downloadDirPath, '%(title)s.%(ext)s') 
+        : path.join(downloadDirPath, fileName);
 
     currentProgress[url] = {
         title, quality, thumbnail, fileName,
         videoPercent: 0, audioPercent: 0, subtitlePercent: 0,
-        phase: 'video', speed: null, eta: null, filesize: null,
-        subtitle_lang: subtitle_lang || null
+        phase: isPlaylist ? 'playlist' : 'video', 
+        speed: null, eta: null, filesize: null,
+        subtitle_lang: subtitle_lang || null,
+        isPlaylist
     };
 
     const ytArgs = [
         '--extractor-args', 'youtube:player_client=android_vr,web',
-        '-f', `${format_id}+bestaudio[ext=m4a]/bestaudio/best`,
+        '-f', isPlaylist ? 'bestvideo+bestaudio[ext=m4a]/bestaudio/best' : `${format_id}+bestaudio[ext=m4a]/bestaudio/best`,
         '--merge-output-format', 'mp4',
         '--newline',
     ];
     if (subtitle_lang) {
-        // Coba subtitle manual dulu, fallback ke auto-generated
         ytArgs.push(
             '--write-sub', '--write-auto-sub',
             '--sub-lang', subtitle_lang,
@@ -412,13 +421,22 @@ app.post('/api/download', (req, res) => {
         line = line.trim();
         if (!line) return;
 
+        if (line.includes('[download] Downloading item')) {
+            currentProgress[url].phase = 'playlist';
+            const match = line.match(/item\s+(\d+)\s+of\s+(\d+)/);
+            if (match) {
+                currentProgress[url].status = `Mengunduh item ${match[1]}/${match[2]}`;
+            }
+            return;
+        }
+
         if (line.includes('[download] Destination:')) {
             const dest = line.replace('[download] Destination:', '').trim().toLowerCase();
             const isSub = dest.endsWith('.vtt') || dest.endsWith('.srt') ||
                           dest.includes('.vtt.') || dest.includes('.srt.');
             if (isSub) {
                 currentProgress[url].phase = 'subtitle_dl';
-            } else {
+            } else if (!isPlaylist) {
                 destCount++;
                 if (destCount === 1) {
                     currentProgress[url].phase = 'video';
@@ -431,7 +449,7 @@ app.post('/api/download', (req, res) => {
             return;
         }
         if (line.includes('[Merger]') || line.includes('Merging formats')) {
-            currentProgress[url].phase = 'merging';
+            if (!isPlaylist) currentProgress[url].phase = 'merging';
             return;
         }
         if (!line.startsWith('[download]')) return;
@@ -445,6 +463,7 @@ app.post('/api/download', (req, res) => {
             if      (ph === 'video')       currentProgress[url].videoPercent    = p;
             else if (ph === 'audio')       currentProgress[url].audioPercent    = p;
             else if (ph === 'subtitle_dl') currentProgress[url].subtitlePercent = p;
+            else if (ph === 'playlist')    currentProgress[url].videoPercent    = p; // Use videoPercent for playlist item pct
         }
         if (speed) currentProgress[url].speed = speed[1];
         if (eta)   currentProgress[url].eta   = eta[1];
@@ -465,71 +484,90 @@ app.post('/api/download', (req, res) => {
         delete activeProcesses[url];
         if (!currentProgress[url]) return;
 
-        if (code === 0 && fs.existsSync(outputPath)) {
-
-            // Cari file subtitle (.srt / .vtt) hasil download
-            const subBase = path.basename(outputPath, '.mp4');
-            const subDir  = path.dirname(outputPath);
-            let subFile   = null;
-            try {
-                const files = fs.readdirSync(subDir);
-                // yt-dlp menyimpan subtitle sebagai: namafile.LANG.srt atau namafile.LANG.vtt
-                subFile = files
-                    .filter(f => f.startsWith(subBase) && f !== path.basename(outputPath) &&
-                                 (f.endsWith('.srt') || f.endsWith('.vtt')))
-                    .map(f => path.join(subDir, f))[0] || null;
-            } catch(_) {}
-
-            const finalize = () => {
-                if (!currentProgress[url]) return;
-                const size = formatBytes(fs.statSync(outputPath).size);
-                currentProgress[url].phase        = 'done';
+        if (code === 0) {
+            if (isPlaylist) {
+                // Playlist download finished, scan the folder to add all videos to history
+                currentProgress[url].phase = 'done';
                 currentProgress[url].videoPercent = 100;
-                currentProgress[url].audioPercent = 100;
-                currentProgress[url].filesize     = size;
-                const entry = {
-                    fileName, folderPath: config.downloadFolder,
-                    title, quality, thumbnail: thumbnail || '',
-                    filesize: size, isShorts: !!isShorts,
-                    sourceUrl: sourceUrl || url,
-                    date: new Date().toISOString(),
-                    hasSubtitle: !!subFile
+                
+                try {
+                    const files = fs.readdirSync(downloadDirPath);
+                    files.forEach(f => {
+                        if (isVideoFile(f)) {
+                            const stats = fs.statSync(path.join(downloadDirPath, f));
+                            const entry = {
+                                fileName: f, 
+                                folderPath: downloadDirPath,
+                                title: f.replace(/\.[^/.]+$/, "").replace(/_/g, ' '),
+                                quality: 'Playlist',
+                                thumbnail: thumbnail || '',
+                                filesize: formatBytes(stats.size),
+                                isShorts: !!isShorts,
+                                sourceUrl: sourceUrl || url,
+                                date: new Date().toISOString()
+                            };
+                            const key = libKey(downloadDirPath, f);
+                            const idx = downloadHistory.findIndex(h => libKey(h.folderPath || config.downloadFolder, h.fileName) === key);
+                            if (idx >= 0) downloadHistory[idx] = entry;
+                            else downloadHistory.push(entry);
+                        }
+                    });
+                    saveLibrary();
+                } catch (e) { console.error('Gagal scan playlist folder:', e.message); }
+
+            } else if (fs.existsSync(outputPath)) {
+                // Single video logic (existing)
+                const subBase = path.basename(outputPath, '.mp4');
+                const subDir  = path.dirname(outputPath);
+                let subFile   = null;
+                try {
+                    const files = fs.readdirSync(subDir);
+                    subFile = files
+                        .filter(f => f.startsWith(subBase) && f !== path.basename(outputPath) &&
+                                     (f.endsWith('.srt') || f.endsWith('.vtt')))
+                        .map(f => path.join(subDir, f))[0] || null;
+                } catch(_) {}
+
+                const finalize = () => {
+                    if (!currentProgress[url]) return;
+                    const size = formatBytes(fs.statSync(outputPath).size);
+                    currentProgress[url].phase        = 'done';
+                    currentProgress[url].videoPercent = 100;
+                    currentProgress[url].audioPercent = 100;
+                    currentProgress[url].filesize     = size;
+                    const entry = {
+                        fileName, folderPath: downloadDirPath,
+                        title, quality, thumbnail: thumbnail || '',
+                        filesize: size, isShorts: !!isShorts,
+                        sourceUrl: sourceUrl || url,
+                        date: new Date().toISOString(),
+                        hasSubtitle: !!subFile
+                    };
+                    const key = libKey(downloadDirPath, fileName);
+                    const idx = downloadHistory.findIndex(h => libKey(h.folderPath || config.downloadFolder, h.fileName) === key);
+                    if (idx >= 0) downloadHistory[idx] = entry;
+                    else downloadHistory.push(entry);
+                    saveLibrary();
                 };
-                const key = libKey(config.downloadFolder, fileName);
-                const idx = downloadHistory.findIndex(h => libKey(h.folderPath || config.downloadFolder, h.fileName) === key);
-                if (idx >= 0) downloadHistory[idx] = entry;
-                else downloadHistory.push(entry);
-                saveLibrary();
-            };
 
-            if (subFile) {
-                console.log(`💬 Merging subtitle: ${path.basename(subFile)}`);
-                if (currentProgress[url]) currentProgress[url].phase = 'subtitle';
-                const tmpOut = outputPath.replace(/\.mp4$/, '_sub.mp4');
-                const ff = spawn('ffmpeg', [
-                    '-i', outputPath,
-                    '-i', subFile,
-                    '-c', 'copy',
-                    '-c:s', 'mov_text',
-                    '-metadata:s:s:0', `language=${subtitle_lang || 'und'}`,
-                    '-y', tmpOut
-                ]);
-                ff.stderr.on('data', () => {});
-                ff.on('close', ffCode => {
-                    if (ffCode === 0 && fs.existsSync(tmpOut)) {
-                        fs.renameSync(tmpOut, outputPath);
-                        console.log('✅ Subtitle merged');
-                    } else {
-                        console.warn(`⚠️ Subtitle merge gagal (code ${ffCode})`);
-                        if (fs.existsSync(tmpOut)) try { fs.unlinkSync(tmpOut); } catch(_) {}
-                    }
-                    try { fs.unlinkSync(subFile); } catch(_) {}
+                if (subFile) {
+                    if (currentProgress[url]) currentProgress[url].phase = 'subtitle';
+                    const tmpOut = outputPath.replace(/\.mp4$/, '_sub.mp4');
+                    const ff = spawn('ffmpeg', [
+                        '-i', outputPath, '-i', subFile, '-c', 'copy', '-c:s', 'mov_text',
+                        '-metadata:s:s:0', `language=${subtitle_lang || 'und'}`, '-y', tmpOut
+                    ]);
+                    ff.on('close', ffCode => {
+                        if (ffCode === 0 && fs.existsSync(tmpOut)) {
+                            fs.renameSync(tmpOut, outputPath);
+                        }
+                        try { fs.unlinkSync(subFile); } catch(_) {}
+                        finalize();
+                    });
+                } else {
                     finalize();
-                });
-            } else {
-                finalize();
+                }
             }
-
         } else if (currentProgress[url].phase !== 'cancelled') {
             currentProgress[url].phase = 'done';
         }

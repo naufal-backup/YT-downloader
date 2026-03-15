@@ -12,6 +12,15 @@
 (function () {
 'use strict';
 
+let ttPolicy;
+try {
+    if (window.trustedTypes && window.trustedTypes.createPolicy) {
+        ttPolicy = window.trustedTypes.createPolicy('ytdl-policy', {
+            createHTML: (s) => s
+        });
+    }
+} catch (e) {}
+
 // 1. Sistem Anti-Bentrok
 if (window.__ytdl_active_version) return;
 window.__ytdl_active_version = "11.22";
@@ -94,7 +103,7 @@ body.ytdl-hide-share tp-yt-paper-toast {
 }
 
 .ytdl-hover-dl {
-    position:absolute; top:8px; right:8px; background:#e00 !important; color:#fff !important;
+    position:absolute; top:8px; left:8px; background:#e00 !important; color:#fff !important;
     border:1px solid rgba(255,255,255,0.2); border-radius:6px; padding:6px 10px; font-size:12px;
     font-weight:bold; font-family:"Roboto","Arial",sans-serif; cursor:pointer; z-index:99;
     opacity:0; transition:opacity 0.2s ease, transform 0.1s ease, background 0.2s;
@@ -309,6 +318,7 @@ ytd-compact-video-renderer:hover .ytdl-hover-dl { opacity:1; }
 .scan-bar{display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-shrink:0}
 .scan-stats{font-size:10px;color:#555;flex:1}
 .sc-empty{color:#333;font-size:13px;text-align:center;margin-top:40px}
+.ytdl-menu-item { cursor: pointer !important; }
 .ytdl-menu-item:hover { background-color: rgba(255, 255, 255, 0.1) !important; }
 `;
 document.head.appendChild(styleEl);
@@ -330,10 +340,11 @@ function el(tag, props = {}, children = []) {
 
 // Helper: set innerHTML hanya untuk container yang belum di-attach ke DOM
 function safeSetInner(container, htmlString) {
-    const tmp = document.createElement('div');
-    tmp.innerHTML = htmlString;
-    container.innerHTML = '';
-    while (tmp.firstChild) container.appendChild(tmp.firstChild);
+    if (ttPolicy) {
+        container.innerHTML = ttPolicy.createHTML(htmlString);
+    } else {
+        container.innerHTML = htmlString;
+    }
 }
 
 // ── MODAL ──────────────────────────────────────────────────────────────────
@@ -535,10 +546,10 @@ const menuObserver = new MutationObserver(() => {
         const menuItem = document.createElement('yt-list-item-view-model');
         menuItem.className = 'yt-list-item-view-model ytdl-menu-item';
         menuItem.setAttribute('role', 'menuitem');
-        menuItem.style.cursor = 'pointer';
 
-        // Build structure manually (Trusted Types safe)
-        const outerDiv = el('div', { class: 'yt-list-item-view-model__label yt-list-item-view-model__container yt-list-item-view-model__container--compact yt-list-item-view-model__container--tappable yt-list-item-view-model__container--in-popup' });
+        // Build structure manually (Trusted Types safe) to match native structure
+        const layoutWrapper = el('div', { class: 'yt-list-item-view-model__layout-wrapper yt-list-item-view-model__container yt-list-item-view-model__container--compact yt-list-item-view-model__container--tappable yt-list-item-view-model__container--in-popup' });
+        const mainContainer = el('div', { class: 'yt-list-item-view-model__main-container' });
 
         const imgContainer = el('div', { 'aria-hidden': 'true', class: 'yt-list-item-view-model__image-container yt-list-item-view-model__leading' });
         const iconWrap = el('span', { class: 'ytIconWrapperHost yt-list-item-view-model__accessory yt-list-item-view-model__image', role: 'img', 'aria-hidden': 'true' });
@@ -555,14 +566,15 @@ const menuObserver = new MutationObserver(() => {
         menuSvg.appendChild(menuPath);
         svgWrap.appendChild(menuSvg); iconShape.appendChild(svgWrap); iconWrap.appendChild(iconShape); imgContainer.appendChild(iconWrap);
 
-        const btnAnchor = el('button', { class: 'ytButtonOrAnchorHost ytButtonOrAnchorButton yt-list-item-view-model__button-or-anchor', style: 'cursor:pointer;' });
-        const txtWrap = el('div', { class: 'yt-list-item-view-model__text-wrapper' });
+        const btnAnchor = el('button', { class: 'ytButtonOrAnchorHost ytButtonOrAnchorButton yt-list-item-view-model__button-or-anchor', style: 'cursor:pointer;flex:1;text-align:left;background:none;border:none;display:flex;align-items:center;height:100%;padding:0;' });
+        const txtWrap = el('div', { class: 'yt-list-item-view-model__text-wrapper', style: 'flex:1;' });
         const titleWrap = el('div', { class: 'yt-list-item-view-model__title-wrapper' });
         const titleSpan = el('span', { class: 'yt-core-attributed-string yt-list-item-view-model__title yt-core-attributed-string--white-space-pre-wrap', role: 'text', style: 'color:#e00;font-weight:bold;', textContent: 'Download' });
         titleWrap.appendChild(titleSpan); txtWrap.appendChild(titleWrap); btnAnchor.appendChild(txtWrap);
 
-        outerDiv.appendChild(imgContainer); outerDiv.appendChild(btnAnchor);
-        menuItem.appendChild(outerDiv);
+        mainContainer.appendChild(imgContainer); mainContainer.appendChild(btnAnchor);
+        layoutWrapper.appendChild(mainContainer);
+        menuItem.appendChild(layoutWrapper);
 
         menuItem.onclick = (e) => {
             e.stopPropagation();
@@ -777,7 +789,7 @@ function renderDlPanel(data) {
     if (!panel) return;
     const entries = Object.entries(data);
     if (entries.length === 0) {
-        panel.innerHTML = '';
+        panel.replaceChildren();
         panel.appendChild(el('p', { class: 'dl-empty', textContent: 'Tidak ada unduhan aktif' }));
         return;
     }
@@ -795,6 +807,7 @@ function renderDlPanel(data) {
         const sp       = info.subtitlePercent || 0;
         const phase    = info.phase || 'video';
         const isPaused = !!info.paused;
+        const isPlaylist = !!info.isPlaylist;
         const spd      = info.speed ? `⚡ ${info.speed}` : '';
         const eta      = info.eta   ? `⏱ ${info.eta}`   : '';
         const title    = (info.title || url).substring(0, 50);
@@ -807,15 +820,17 @@ function renderDlPanel(data) {
         const cancelled = phase === 'cancelled';
         const subMerge  = phase === 'subtitle';
         const subDl     = phase === 'subtitle_dl';
+        const playlist  = phase === 'playlist';
         const active    = !done && !merging && !cancelled && !subMerge;
 
-        const videoActive = phase === 'video';
+        const videoActive = phase === 'video' || playlist;
         const audioActive = phase === 'audio' || phase === 'subtitle_dl';
 
         const statusColor = isPaused ? '#fa0'
-            : ({ video:'#f44', audio:'#3ea6ff', subtitle_dl:'#a0f', merging:'#fa0', subtitle:'#a0f', done:'#0c6', cancelled:'#f44' }[phase] || '#888');
+            : ({ video:'#f44', audio:'#3ea6ff', subtitle_dl:'#a0f', merging:'#fa0', subtitle:'#a0f', done:'#0c6', cancelled:'#f44', playlist: '#0a5' }[phase] || '#888');
         const statusText = isPaused ? '⏸ Dijeda'
-            : ({ video:'⬇ Video...', audio:'⬇ Audio...', subtitle_dl:'💬 Subtitle...', merging:'🔀 Menggabungkan...', subtitle:'💬 Menyisipkan subtitle...', done:'✅ Selesai', cancelled:'❌ Dibatalkan' }[phase] || phase);
+            : (playlist ? (info.status || '📥 Mengunduh Playlist...') 
+            : ({ video:'⬇ Video...', audio:'⬇ Audio...', subtitle_dl:'💬 Subtitle...', merging:'🔀 Menggabungkan...', subtitle:'💬 Menyisipkan subtitle...', done:'✅ Selesai', cancelled:'❌ Dibatalkan' }[phase] || phase));
 
         const vDim = videoActive ? '' : (vp >= 100 ? 'opacity:0.45;' : 'opacity:0.2;');
         const aDim = audioActive ? '' : (ap >= 100 ? 'opacity:0.45;' : 'opacity:0.2;');
@@ -830,13 +845,22 @@ function renderDlPanel(data) {
         htmlParts.push(`</div>`);
         if (isPaused) htmlParts.push(`<div class="dl-paused-label">⏸ Dijeda</div>`);
 
-        const bars = `
-            <div class="dl-row"><span style="${vDim}${pauseDim}">🎬 Video <b>${vp.toFixed(1)}%</b></span><span class="spd">${videoActive && !isPaused ? spd : ''}</span></div>
-            <div class="pbar" style="${vDim}${pauseDim}"><div class="pbar-fill pbar-v" style="width:${vp}%"></div></div>
-            <div class="dl-row"><span style="${aDim}${pauseDim}">🔊 Audio <b>${ap.toFixed(1)}%</b></span><span class="eta">${audioActive && !isPaused ? eta : ''}</span></div>
-            <div class="pbar" style="${aDim}${pauseDim}"><div class="pbar-fill pbar-a" style="width:${ap}%"></div></div>
-            ${subDl ? `<div class="dl-row"><span style="color:#a0f">💬 Subtitle <b>${sp.toFixed(1)}%</b></span></div><div class="pbar"><div class="pbar-fill pbar-s" style="width:${sp}%"></div></div>` : ''}
-        `;
+        let bars = '';
+        if (playlist) {
+            bars = `
+                <div class="dl-row"><span>📦 Playlist Progress</span><span class="spd">${!isPaused ? spd : ''}</span></div>
+                <div class="pbar" style="background:#1a3a1a;"><div class="pbar-fill" style="width:${vp}%; background:linear-gradient(90deg,#0a5,#0f7);"></div></div>
+                <div class="dl-row"><span style="font-size:9px;color:#aaa;">${info.status || ''}</span><span class="eta">${!isPaused ? eta : ''}</span></div>
+            `;
+        } else {
+            bars = `
+                <div class="dl-row"><span style="${vDim}${pauseDim}">🎬 Video <b>${vp.toFixed(1)}%</b></span><span class="spd">${videoActive && !isPaused ? spd : ''}</span></div>
+                <div class="pbar" style="${vDim}${pauseDim}"><div class="pbar-fill pbar-v" style="width:${vp}%"></div></div>
+                <div class="dl-row"><span style="${aDim}${pauseDim}">🔊 Audio <b>${ap.toFixed(1)}%</b></span><span class="eta">${audioActive && !isPaused ? eta : ''}</span></div>
+                <div class="pbar" style="${aDim}${pauseDim}"><div class="pbar-fill pbar-a" style="width:${ap}%"></div></div>
+                ${subDl ? `<div class="dl-row"><span style="color:#a0f">💬 Subtitle <b>${sp.toFixed(1)}%</b></span></div><div class="pbar"><div class="pbar-fill pbar-s" style="width:${sp}%"></div></div>` : ''}
+            `;
+        }
 
         if (cancelled) {
             htmlParts.push(`<p style="text-align:center;color:#f44;font-size:11px;margin:4px 0">❌ Dibatalkan</p>`);
@@ -915,7 +939,7 @@ function playFile(fileName, folderPath, title) {
     const sel       = document.getElementById('sub-track-sel');
     const badge     = document.getElementById('sub-on-badge');
     player.querySelectorAll('track').forEach(t => t.remove());
-    sel.innerHTML = '';
+    sel.replaceChildren();
     sel.appendChild(el('option', { value: '' }, ['— Nonaktif —']));
     if (badge) badge.style.display = 'none';
     if (toggleRow) toggleRow.style.display = 'none';
@@ -1071,14 +1095,14 @@ function loadHistory(force) {
                 renderHistory(hist);
             } catch (err) {
                 const hListEl = document.getElementById('h-list');
-                hListEl.innerHTML = '';
+                hListEl.replaceChildren();
                 const errMsg = el('p', { style: 'text-align:center;color:#f55;margin-top:20px;padding:20px;border:1px solid #f55;border-radius:10px;background:#200;', textContent: '❌ Gagal membaca data JSON. Server backend tidak membalas dengan format yang benar.' });
                 hListEl.appendChild(errMsg);
             }
         },
         onerror: () => {
             const hListEl = document.getElementById('h-list');
-            hListEl.innerHTML = '';
+            hListEl.replaceChildren();
             const errMsg = el('p', { style: 'text-align:center;color:#f55;margin-top:20px;padding:20px;border:1px solid #f55;border-radius:10px;background:#200;', textContent: '❌ Koneksi Terputus. Pastikan backend server sudah menyala di localhost:8989.' });
             hListEl.appendChild(errMsg);
         }
@@ -1088,7 +1112,7 @@ function loadHistory(force) {
 function renderHistory(hist) {
     const list = document.getElementById('h-list');
     list.className = libraryView;
-    list.innerHTML = '';
+    list.replaceChildren();
     if (!hist.length) { list.appendChild(el('p', { style: 'text-align:center;color:#333;margin-top:20px', textContent: 'Belum ada library.' })); return; }
 
     let virtualFolderMap = JSON.parse(localStorage.getItem('ytdl_virtual_folder_map') || '{}');
@@ -1235,14 +1259,14 @@ function renderHistory(hist) {
 function openQualityPopup(videoUrl, titleHint, isShorts) {
     document.getElementById('popup-title').textContent = titleHint || '';
     const qListEl = document.getElementById('q-list');
-    qListEl.innerHTML = '';
+    qListEl.replaceChildren();
     const loadingMsg = el('span', { style: 'color:#555;font-size:13px', textContent: 'Menganalisis...' });
     const urlNote = el('span', { style: 'font-size:9px;color:#888;word-break:break-all', textContent: 'URL: ' + videoUrl });
     loadingMsg.appendChild(document.createElement('br')); loadingMsg.appendChild(urlNote);
     qListEl.appendChild(loadingMsg);
 
     const plZone = document.getElementById('playlist-inject-zone');
-    plZone.innerHTML = '';
+    plZone.replaceChildren();
 
     const urlObj = new URL(videoUrl, location.origin);
     const listId = urlObj.searchParams.get('list');
@@ -1283,18 +1307,18 @@ function openQualityPopup(videoUrl, titleHint, isShorts) {
         onload: (res) => {
             let data;
             try { data = JSON.parse(res.responseText); } catch(_) {
-                qListEl.innerHTML = '';
+                qListEl.replaceChildren();
                 qListEl.appendChild(el('span', { style: 'color:#f55;font-size:12px;', textContent: '❌ Gagal memuat info. Format respons dari server salah.' }));
                 return;
             }
             if (data.error) {
-                qListEl.innerHTML = '';
+                qListEl.replaceChildren();
                 qListEl.appendChild(el('span', { style: 'color:#f55;font-size:12px;', textContent: '❌ yt-dlp error: ' + data.error }));
                 return;
             }
 
             document.getElementById('popup-title').textContent = (data.title || '').substring(0, 55);
-            qListEl.innerHTML = '';
+            qListEl.replaceChildren();
 
             if (!data.formats || !data.formats.length) {
                 qListEl.appendChild(el('span', { style: 'color:#f55', textContent: 'Tidak ada format tersedia' }));
@@ -1336,7 +1360,7 @@ function openQualityPopup(videoUrl, titleHint, isShorts) {
             });
         },
         onerror: () => {
-            qListEl.innerHTML = '';
+            qListEl.replaceChildren();
             qListEl.appendChild(el('span', { style: 'color:#f55', textContent: '❌ Koneksi ke backend terputus. (localhost:8989 down)' }));
         }
     });
@@ -1367,7 +1391,7 @@ function saveScanFolders() {
 
 function renderFolderList() {
     const folderListDOM = document.getElementById('folder-list');
-    folderListDOM.innerHTML = '';
+    folderListDOM.replaceChildren();
     const mainItem = el('div', { class: 'folder-item' });
     mainItem.appendChild(el('span', { textContent: '📥' }));
     const fpMain = el('span', { class: 'fp' }); fpMain.title = mainFolder; fpMain.textContent = mainFolder;
@@ -1399,19 +1423,19 @@ document.getElementById('scan-btn').onclick = () => {
     const stats = document.getElementById('scan-stats');
     const listEl = document.getElementById('scan-list');
     btn.disabled = true; btn.textContent = '⏳ Memindai...'; stats.textContent = '';
-    listEl.innerHTML = ''; listEl.appendChild(el('p', { class: 'sc-empty', textContent: 'Memindai...' }));
+    listEl.replaceChildren(); listEl.appendChild(el('p', { class: 'sc-empty', textContent: 'Memindai...' }));
     GM_xmlhttpRequest({
         method: 'GET', url: `${API}/api/scan`,
         onload: (res) => {
             btn.disabled = false; btn.textContent = '🔍 Scan Sekarang';
             try { lastScannedFiles = JSON.parse(res.responseText); } catch(_) {
-                listEl.innerHTML = ''; listEl.appendChild(el('p', { class: 'sc-empty', style: 'color:#f55', textContent: 'Response tidak valid' })); return;
+                listEl.replaceChildren(); listEl.appendChild(el('p', { class: 'sc-empty', style: 'color:#f55', textContent: 'Response tidak valid' })); return;
             }
             stats.textContent = `${lastScannedFiles.length} video ditemukan`; renderScanList(lastScannedFiles);
         },
         onerror: () => {
             btn.disabled = false; btn.textContent = '🔍 Scan Sekarang';
-            listEl.innerHTML = ''; listEl.appendChild(el('p', { class: 'sc-empty', style: 'color:#f55', textContent: 'Gagal terhubung ke server' }));
+            listEl.replaceChildren(); listEl.appendChild(el('p', { class: 'sc-empty', style: 'color:#f55', textContent: 'Gagal terhubung ke server' }));
         }
     });
 };
@@ -1419,7 +1443,7 @@ document.getElementById('scan-btn').onclick = () => {
 function renderScanList(files) {
     const listEl = document.getElementById('scan-list');
     listEl.className = libraryView;
-    listEl.innerHTML = '';
+    listEl.replaceChildren();
 
     if (!files.length) { listEl.appendChild(el('p', { class: 'sc-empty', textContent: 'Tidak ada video ditemukan.' })); return; }
 
