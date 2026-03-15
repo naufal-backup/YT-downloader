@@ -425,6 +425,28 @@ sideP.appendChild(histPanel);
 
 // SCAN PANEL
 const scanPanel = el('div', { id: 'scan-panel' });
+
+const browserRow = el('div', { class: 'add-row', style: 'margin-bottom:12px; align-items:center; border-bottom:1px solid #222; padding-bottom:12px;' });
+browserRow.appendChild(el('span', { style: 'font-size:11px; color:#888; margin-right:8px;', textContent: '🍪 Cookie Browser:' }));
+const browserSel = el('select', { id: 'browser-sel', style: 'background:#1a1a1a; border:1px solid #222; border-radius:6px; padding:6px; color:#fff; font-size:11px; flex:1;' });
+[
+    {v:'', t:'— Tanpa Cookie —'},
+    {v:'brave', t:'Brave'},
+    {v:'chrome', t:'Chrome'},
+    {v:'firefox', t:'Firefox'},
+    {v:'edge', t:'Edge'},
+    {v:'safari', t:'Safari'},
+    {v:'opera', t:'Opera'},
+    {v:'vivaldi', t:'Vivaldi'}
+].forEach(b => browserSel.appendChild(el('option', { value: b.v }, [b.t])));
+browserRow.appendChild(browserSel);
+browserSel.onchange = () => {
+    GM_xmlhttpRequest({
+        method: 'POST', url: `${API}/api/config`, headers: {'Content-Type':'application/json'},
+        data: JSON.stringify({ cookiesFromBrowser: browserSel.value || null })
+    });
+};
+
 const folderListEl = el('div', { class: 'folder-list', id: 'folder-list' });
 const addRow = el('div', { class: 'add-row' });
 const folderInput = el('input', { id: 'folder-input', placeholder: 'Path folder, mis: /home/user/Videos' });
@@ -438,6 +460,7 @@ const sbtnList = el('button', { class: 'vbtn' + (libraryView==='list'?' active':
 scanBar.appendChild(scanBtn2); scanBar.appendChild(scanStats); scanBar.appendChild(sbtnGrid); scanBar.appendChild(sbtnList);
 const scanList = el('div', { id: 'scan-list', class: libraryView });
 scanList.appendChild(el('p', { class: 'sc-empty', textContent: 'Klik "Scan Sekarang" untuk memindai.' }));
+scanPanel.appendChild(browserRow);
 scanPanel.appendChild(folderListEl); scanPanel.appendChild(addRow); scanPanel.appendChild(scanBar); scanPanel.appendChild(scanList);
 sideP.appendChild(scanPanel);
 
@@ -1379,6 +1402,8 @@ function loadScanConfig() {
             try {
                 const cfg = JSON.parse(res.responseText);
                 mainFolder = cfg.downloadFolder; scanFolders = cfg.scanFolders || []; renderFolderList();
+                const bSel = document.getElementById('browser-sel');
+                if (bSel) bSel.value = cfg.cookiesFromBrowser || '';
             } catch (err) { console.error("Gagal parse API config"); }
         },
         onerror: () => console.error("Koneksi gagal saat load Scan Config")

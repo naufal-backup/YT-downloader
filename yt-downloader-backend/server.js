@@ -52,9 +52,13 @@ function libKey(folderPath, fileName) {
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 function loadConfig() {
     try {
-        if (fs.existsSync(CONFIG_PATH)) return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+        if (fs.existsSync(CONFIG_PATH)) {
+            const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+            if (cfg.cookiesFromBrowser === undefined) cfg.cookiesFromBrowser = null;
+            return cfg;
+        }
     } catch (_) {}
-    return { downloadFolder: path.join(os.homedir(), 'Downloads', 'YT-Downloads'), scanFolders: [] };
+    return { downloadFolder: path.join(os.homedir(), 'Downloads', 'YT-Downloads'), scanFolders: [], cookiesFromBrowser: null };
 }
 function saveConfig(cfg) {
     try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2)); }
@@ -135,11 +139,15 @@ app.get('/api/thumb', (req, res) => {
 
 // ─── CONFIG ENDPOINTS ────────────────────────────────────────────────────────
 app.get('/api/config', (req, res) => {
-    res.json({ downloadFolder: config.downloadFolder, scanFolders: config.scanFolders || [] });
+    res.json({ 
+        downloadFolder: config.downloadFolder, 
+        scanFolders: config.scanFolders || [],
+        cookiesFromBrowser: config.cookiesFromBrowser || null
+    });
 });
 
 app.post('/api/config', (req, res) => {
-    const { downloadFolder: newFolder, scanFolders } = req.body;
+    const { downloadFolder: newFolder, scanFolders, cookiesFromBrowser } = req.body;
     if (newFolder && typeof newFolder === 'string') {
         config.downloadFolder = newFolder;
         if (!fs.existsSync(config.downloadFolder)) {
@@ -147,6 +155,8 @@ app.post('/api/config', (req, res) => {
         }
     }
     if (Array.isArray(scanFolders)) config.scanFolders = scanFolders;
+    if (cookiesFromBrowser !== undefined) config.cookiesFromBrowser = cookiesFromBrowser;
+    
     saveConfig(config);
     res.json({ success: true, config });
 });
@@ -322,12 +332,35 @@ app.get('/api/subtitle-stream/:key', (req, res) => {
 app.get('/api/info', (req, res) => {
     const url = req.query.url;
     if (!url) return res.status(400).json({ error: 'URL diperlukan' });
-    // Gunakan android_vr,web: android_vr untuk bypass n-challenge, web agar subtitle tersedia
-    exec(`"${YTDLP}" --extractor-args "youtube:player_client=android_vr,web" -J "${url}"`,
+    console.log(`🔍 Metadata request: ${url}`);
+    
+    let cookieArg = '';
+    let extractorArgs = 'youtube:player_client=android_vr,web';
+    
+    if (config.cookiesFromBrowser) {
+        cookieArg = `--cookies-from-browser ${config.cookiesFromBrowser}`;
+        // android_vr doesn't support cookies, so we let yt-dlp use default clients when logged in
+        extractorArgs = ''; 
+    }
+
+    const eArg = extractorArgs ? `--extractor-args "${extractorArgs}"` : '';
+
+    // Gunakan extractorArgs yang sesuai (android_vr untuk bypass n-challenge jika tanpa cookie)
+    exec(`"${YTDLP}" ${cookieArg} ${eArg} -J "${url}"`,
         { maxBuffer: 1024 * 1024 * 20 }, (error, stdout, stderr) => {
-        if (error) return res.status(500).json({ error: 'Gagal memuat info video', detail: stderr });
+        if (error) {
+            console.error(`❌ yt-dlp info error:`, stderr);
+            return res.status(500).json({ error: 'Gagal memuat info video', detail: stderr });
+        }
         try {
             const info = JSON.parse(stdout);
+            console.log(`✅ Loaded: ${info.title}`);
+            if (info.formats) {
+                console.log(`Formats found: ${info.formats.length}`);
+                info.formats.forEach(f => {
+                    console.log(`- ID: ${f.format_id} | ${f.height}p | ${f.vcodec} | ${f.ext}`);
+                });
+            }
             const seen = new Set();
             const formats = [];
             info.formats
@@ -393,12 +426,23 @@ app.post('/api/download', (req, res) => {
         isPlaylist
     };
 
+    let extractorArgs = 'youtube:player_client=android_vr,web';
+    if (config.cookiesFromBrowser) {
+        extractorArgs = '';
+    }
+    const eArgArr = extractorArgs ? ['--extractor-args', extractorArgs] : [];
+
     const ytArgs = [
-        '--extractor-args', 'youtube:player_client=android_vr,web',
+        ...eArgArr,
         '-f', isPlaylist ? 'bestvideo+bestaudio[ext=m4a]/bestaudio/best' : `${format_id}+bestaudio[ext=m4a]/bestaudio/best`,
         '--merge-output-format', 'mp4',
         '--newline',
     ];
+
+    if (config.cookiesFromBrowser) {
+        ytArgs.push('--cookies-from-browser', config.cookiesFromBrowser);
+    }
+
     if (subtitle_lang) {
         ytArgs.push(
             '--write-sub', '--write-auto-sub',

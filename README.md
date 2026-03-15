@@ -156,6 +156,21 @@ journalctl --user -u yt-downloader.service -f
 
 ## Konfigurasi Opsional
 
+### Cookie Browser (PENTING: Lewati n-challenge)
+
+Jika Anda mengalami masalah "Sign in to confirm you’re not a bot", aktifkan opsi **Cookie Browser** di tab **Scan Folder** pada antarmuka YouTube.
+
+Dukung:
+- Brave
+- Chrome
+- Firefox
+- Edge
+- Safari
+- Opera
+- Vivaldi
+
+> **Catatan:** Pastikan Anda sudah login ke YouTube di browser yang Anda pilih agar cookie valid.
+
 ### yt-dlp path kustom (jika auto-detect gagal)
 
 ```bash
