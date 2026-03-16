@@ -620,7 +620,7 @@
         player.pause();
         player.src = '';
         document.getElementById('p-title').textContent = 'Library & Player';
-        const toggleRow = document.getElementById('sub-toggle-row');
+
         if (toggleRow) toggleRow.style.display = 'none';
         player.querySelectorAll('track').forEach(t => t.remove());
         const sel = document.getElementById('sub-track-sel');
@@ -1229,7 +1229,7 @@
         if (!playerVisible) { playerVisible = true; localStorage.setItem('ytdl_player', 'visible'); applyPlayerVisibility(); }
         updateToggleBar(title || fileName, Object.keys(_w.__ytdlProg || {}).length);
 
-        const toggleRow = document.getElementById('sub-toggle-row');
+
         const sel       = document.getElementById('sub-track-sel');
         const badge     = document.getElementById('sub-on-badge');
         player.querySelectorAll('track').forEach(t => t.remove());
@@ -1675,21 +1675,7 @@
                                   return;
                               }
 
-                              const subLangs = data.subtitleLangs || [];
-                              if (subLangs.length > 0) {
-                                  const subRow = el('div', { class: 'dl-sub-row' });
-                                  subRow.appendChild(document.createTextNode('💬 '));
-                                  const subRowLabel = el('label', { style: 'color:#a0f;font-weight:700;', textContent: 'Subtitle:' });
-                                  const subRowSel = el('select', { id: 'popup-sub-sel', style: 'margin-left:4px' });
-                                  subRowSel.appendChild(el('option', { value: '' }, ['— Tidak —']));
-                                  subLangs.forEach(l => {
-                                      const opt = el('option', { value: l }, [l]);
-                                      if (l === 'id' || l === 'en') opt.selected = true;
-                                      subRowSel.appendChild(opt);
-                                  });
-                                  subRow.appendChild(subRowLabel); subRow.appendChild(subRowSel);
-                                  qListEl.appendChild(subRow);
-                              }
+
 
                               data.formats.forEach(f => {
                                   const btn = el('button', { class: 'q-btn', textContent: f.quality });
